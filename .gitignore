@@ -1,0 +1,47 @@
+# Terraform
+
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfplan.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored.
+# It is committed so provider versions are reproducible in CI.
+
+# Creds/Secrets
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+credentials
+kubeconfig
+kubeconfig-*
+.kube/
+
+# Golang app
+bin/
+dist/
+*.test
+*.out
+vendor/
+
+# Junk
+.DS_Store
+.idea/
+.vscode/
+*.swp
