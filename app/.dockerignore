@@ -1,0 +1,9 @@
+# Keep the build context minimal
+.git
+.gitignore
+*.md
+Dockerfile
+.dockerignore
+bin/
+dist/
+*.test
