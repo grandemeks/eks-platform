@@ -19,10 +19,12 @@ database:
 externalSecret:
   enabled: true
   region: eu-central-1
-  # The RDS-managed secret. The exclamation mark is part of the name AWS
-  # generates for secrets it owns, and has to be quoted.
-  remoteSecretName: "rds!db-9c04691d-93a0-4424-b9e8-ac42d196b973-8Pn33i"
-
+  # Full ARN, not the name. Secrets Manager appends a random six-character
+  # suffix to the ARN that is not part of the secret's name, so deriving the
+  # name from the ARN gives a value that does not resolve.
+  remoteSecretName: "arn:aws:secretsmanager:eu-central-1:385291933614:secret:rds!db-9c04691d-93a0-4424-b9e8-ac42d196b973-8Pn33i"
+  roleArn: "arn:aws:iam::385291933614:role/eks-platform-dev-demo-app-secrets"
+  
 # Enabled once kube-prometheus-stack is installed; the CRD does not exist yet.
 serviceMonitor:
   enabled: false

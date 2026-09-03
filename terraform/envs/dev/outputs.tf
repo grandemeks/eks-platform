@@ -39,3 +39,22 @@ output "configure_kubectl" {
   description = "Copy-paste command to point kubectl at this cluster."
   value       = "aws eks update-kubeconfig --name ${module.eks.cluster_name} --region ${var.region}"
 }
+
+output "database_endpoint" {
+  value = module.database.endpoint
+}
+
+output "irsa_aws_load_balancer_controller_role_arn" {
+  description = "Annotate the controller's service account with this."
+  value       = module.irsa_aws_load_balancer_controller.role_arn
+}
+
+output "irsa_demo_app_secrets_role_arn" {
+  description = "Annotate the demo namespace secret-reader service account with this."
+  value       = module.irsa_demo_app_secrets.role_arn
+}
+
+output "database_secret_arn" {
+  description = "Full ARN of the RDS-managed credential, referenced by the SecretStore."
+  value       = module.database.master_user_secret_arn
+}

@@ -1,0 +1,7 @@
+apiVersion: v2
+name: argocd-bootstrap
+description: >-
+  The single Argo CD Application that Terraform creates. It points Argo at the
+  argo-manifests directory, from which every other Application is discovered.
+type: application
+version: 0.1.0

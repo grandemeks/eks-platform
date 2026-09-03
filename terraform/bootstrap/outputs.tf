@@ -22,3 +22,17 @@ output "github_terraform_role_arn" {
   description = "Set as the AWS_TERRAFORM_ROLE repo variable in GitHub."
   value       = aws_iam_role.github_terraform.arn
 }
+
+output "ecr_repository_url" {
+  description = "Registry URL for the demo application image."
+  value       = aws_ecr_repository.app.repository_url
+}
+
+output "acm_certificate_arn" {
+  description = "Issued certificate, referenced by the Ingress annotation."
+  value       = aws_acm_certificate_validation.app.certificate_arn
+}
+
+output "app_hostname" {
+  value = var.app_hostname
+}

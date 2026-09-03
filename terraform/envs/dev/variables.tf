@@ -63,3 +63,29 @@ variable "cluster_admin_principal_arns" {
   type        = list(string)
   default     = []
 }
+
+variable "argocd_chart_version" {
+  description = <<-EOT
+    Argo CD Helm chart version. Pinned rather than floating: an unpinned chart
+    means a rebuild months from now installs a different Argo CD than the one
+    this repository was tested against.
+
+    Verify what is current with:
+      helm repo add argo https://argoproj.github.io/argo-helm
+      helm search repo argo/argo-cd --versions | head
+  EOT
+  type        = string
+  default     = "10.6.4"
+}
+
+variable "gitops_repo_url" {
+  description = "Repository Argo CD reconciles the cluster against."
+  type        = string
+  default     = "https://github.com/grandemeks/eks-platform.git"
+}
+
+variable "gitops_target_revision" {
+  description = "Branch or tag Argo tracks."
+  type        = string
+  default     = "main"
+}

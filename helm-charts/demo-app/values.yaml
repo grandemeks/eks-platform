@@ -56,13 +56,11 @@ ingress:
 externalSecret:
   enabled: false
   region: eu-central-1
-  # Name of the AWS Secrets Manager secret RDS manages for the master user.
   remoteSecretName: ""
   refreshInterval: 1h
-  # The operator's own service account, which carries the IRSA annotation. The
-  # application's service account stays without AWS permissions of any kind.
-  serviceAccountName: external-secrets
-  serviceAccountNamespace: external-secrets
+  # Service account in this namespace that External Secrets impersonates.
+  serviceAccountName: demo-app-secrets
+  roleArn: ""
 
 serviceMonitor:
   enabled: false

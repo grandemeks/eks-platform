@@ -1,0 +1,91 @@
+# Argo CD is bootstrapped by Terraform rather than by Argo CD, for the obvious
+# reason. Its values therefore live with the Terraform that installs it, not in
+# argocd/configs/ with everything Argo manages itself. That boundary is the
+# point: exactly one component is installed imperatively, and it is the one that
+# makes everything else declarative.
+
+global:
+  # Two nodes only, so nothing here asks for more than it needs.
+  affinity:
+    podAntiAffinity: soft
+
+crds:
+  install: true
+  # CRDs stay behind when the release is uninstalled, because deleting a CRD
+  # deletes every Application object with it. Terraform destroy removes the
+  # cluster wholesale anyway; this protects against an accidental helm uninstall.
+  keep: false
+
+configs:
+  params:
+    # TLS terminates at the load balancer in front of Argo, so the server itself
+    # speaks plaintext. Running TLS on both sides would mean either a self-signed
+    # certificate the browser rejects, or a second certificate to manage for no
+    # security gain — the hop is inside the VPC.
+    server.insecure: true
+
+  cm:
+    # Resource tracking by annotation rather than by label. The label method
+    # writes app.kubernetes.io/instance on every managed object, which collides
+    # with the same label used by Helm charts and produces phantom OutOfSync
+    # states that are painful to debug.
+    application.resourceTrackingMethod: annotation
+
+    # Ignore the replica count on Deployments that an HPA owns, so Argo does not
+    # fight the autoscaler over the same field.
+    resource.customizations.ignoreDifferences.apps_Deployment: |
+      jqPathExpressions:
+        - .spec.replicas
+
+controller:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+repoServer:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+
+server:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+applicationSet:
+  # Not used yet, but it is what a second environment would be built with, so
+  # it stays enabled rather than being switched on later under time pressure.
+  enabled: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+notifications:
+  # Alerting is handled by Alertmanager. A second notification path would mean
+  # two places to look when something is wrong.
+  enabled: false
+
+dex:
+  # Single operator, no SSO provider. Disabled rather than left running as an
+  # unused authentication surface.
+  enabled: false
+
+redis:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 128Mi
