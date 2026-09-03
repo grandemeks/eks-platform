@@ -1,0 +1,127 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "demo-app.fullname" . }}
+  labels:
+    {{- include "demo-app.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+
+  # maxUnavailable: 0 means a new pod must be Ready before an old one goes
+  # away, so capacity never dips below replicaCount during a rollout.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+
+  selector:
+    matchLabels:
+      {{- include "demo-app.selectorLabels" . | nindent 6 }}
+
+  template:
+    metadata:
+      labels:
+        {{- include "demo-app.labels" . | nindent 8 }}
+      annotations:
+        # Rolls the pods whenever the database secret changes. Without this, a
+        # rotated credential sits in the Secret while the running pods keep
+        # using the old value from their environment, and the application only
+        # picks it up at the next unrelated restart.
+        checksum/db-secret: {{ printf "%s-%s" .Values.externalSecret.remoteSecretName (.Values.image.digest | default .Values.image.tag) | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "demo-app.serviceAccountName" . }}
+
+      # This workload makes no Kubernetes API calls, so it has no use for a
+      # projected service account token.
+      automountServiceAccountToken: false
+
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+
+      # Preferred rather than required: with two nodes and two replicas, a
+      # required constraint would leave a pod Pending during node replacement.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              {{- include "demo-app.selectorLabels" . | nindent 14 }}
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: app
+          image: {{ include "demo-app.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          env:
+            - name: PORT
+              value: "8080"
+            - name: APP_VERSION
+              value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
+            {{- if .Values.externalSecret.enabled }}
+            {{- $secret := include "demo-app.fullname" . }}
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}-db, key: host }
+            - name: DB_PORT
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}-db, key: port }
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}-db, key: dbname }
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}-db, key: username }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: {{ $secret }}-db, key: password }
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+
+          # Liveness deliberately does not touch the database: if it did, a
+          # database outage would restart every replica and turn a recoverable
+          # dependency failure into a self-inflicted one.
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+
+          # Readiness does check it, so an affected pod leaves the load
+          # balancer without being killed and rejoins on its own.
+          readinessProbe:
+            httpGet: { path: /readyz, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+
+          # Holds liveness off until startup completes, so slow starts under
+          # load are not mistaken for a hung process.
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 2
+            failureThreshold: 15

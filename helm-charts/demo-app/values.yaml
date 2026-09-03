@@ -1,0 +1,60 @@
+# Defaults and shape. Environment-specific overrides live in values-<env>.yaml,
+# which Argo CD layers on top of this file.
+
+replicaCount: 2
+
+image:
+  repository: ""
+  # Written by CI. The tag is human-readable; the digest is what actually gets
+  # deployed when present, because it is byte-exact and can be verified against
+  # an image signature.
+  tag: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+serviceAccount:
+  create: true
+  name: ""
+
+service:
+  port: 80
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    # Memory only. A CPU limit is enforced by CFS quota, which throttles the
+    # process for the remainder of a 100ms period once spent, producing tail
+    # latency that looks like an application fault. The request already
+    # guarantees a share under contention.
+    memory: 128Mi
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Must exceed the application's shutdown sequence: it fails readiness for five
+# seconds, then drains for up to fifteen.
+terminationGracePeriodSeconds: 30
+
+ingress:
+  enabled: false
+  host: ""
+  certificateArn: ""
+  group: ""
+
+externalSecret:
+  enabled: false
+  # Name of the AWS Secrets Manager secret holding the RDS master credentials.
+  remoteSecretName: ""
+  refreshInterval: 1h
+  secretStoreName: aws-secretsmanager
+
+serviceMonitor:
+  enabled: false
+  interval: 15s
+  scrapeTimeout: 10s
+
+# Extra environment variables, appended to the ones the chart always sets.
+extraEnv: []

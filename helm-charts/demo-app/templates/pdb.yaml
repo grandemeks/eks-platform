@@ -1,0 +1,17 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "demo-app.fullname" . }}
+  labels:
+    {{- include "demo-app.labels" . | nindent 4 }}
+spec:
+  # Governs voluntary disruptions only — node drains during a cluster or node
+  # group upgrade. The rollout strategy protects deploys; this protects drains.
+  # Without it, both nodes can be drained at once and the service goes to zero
+  # despite a perfect rollout strategy.
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "demo-app.selectorLabels" . | nindent 6 }}
+{{- end }}

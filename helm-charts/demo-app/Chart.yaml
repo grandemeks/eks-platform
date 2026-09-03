@@ -1,0 +1,11 @@
+apiVersion: v2
+name: demo-app
+description: Demo service for the eks-platform reference environment
+type: application
+
+# version is the chart version and changes when the templates change.
+# appVersion tracks the application and is overridden by the image tag, which
+# CI writes into values-dev.yaml. Keeping the two separate means a chart fix
+# and an application release are distinguishable in Git history.
+version: 0.1.0
+appVersion: "0.1.0"
