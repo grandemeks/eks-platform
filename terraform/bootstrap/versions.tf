@@ -1,7 +1,7 @@
 terraform {
   required_version = ">= 1.11" # State native locking in S3
 
-backend "s3" {
+  backend "s3" {
     bucket       = "eks-platform-tfstate-385291933614"
     key          = "bootstrap/terraform.tfstate"
     region       = "eu-central-1"
