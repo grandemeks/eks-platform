@@ -45,3 +45,21 @@ variable "single_nat_gateway" {
   type        = bool
   default     = true
 }
+
+variable "kubernetes_version" {
+  description = "Kubernetes minor version for the cluster."
+  type        = string
+  default     = "1.35"
+}
+
+variable "cluster_public_access_cidrs" {
+  description = "CIDRs allowed to reach the public Kubernetes API endpoint."
+  type        = list(string)
+  default     = ["0.0.0.0/0"]
+}
+
+variable "cluster_admin_principal_arns" {
+  description = "IAM principals granted cluster-admin on the cluster."
+  type        = list(string)
+  default     = []
+}

@@ -32,6 +32,7 @@ credentials
 kubeconfig
 kubeconfig-*
 .kube/
+.kubeconfig
 
 # Golang app
 bin/

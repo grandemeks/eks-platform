@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+#
+# IAM principals that should receive cluster-admin on the EKS cluster.
+# Typically your own IAM identity plus the CI role that runs terraform apply.
+
+cluster_admin_principal_arns = [
+  "arn:aws:iam::<ACCOUNT_ID>:user/<YOUR_IAM_USER>",
+  "arn:aws:iam::<ACCOUNT_ID>:role/eks-platform-github-terraform",
+]
