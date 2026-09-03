@@ -18,6 +18,7 @@ terraform.rc
 *.tfvars.json
 !*.tfvars.example
 
+
 # NOTE: .terraform.lock.hcl is intentionally NOT ignored.
 # It is committed so provider versions are reproducible in CI.
 
