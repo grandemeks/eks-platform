@@ -1,0 +1,60 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: demo-app
+  namespace: argocd
+  annotations:
+    # Wave 2: the load balancer controller and External Secrets are wave 0, so
+    # by the time this syncs the SecretStore has an operator to reconcile it.
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  # Multi-source, because the chart and its environment values live in
+  # different directories. A single-source Application resolves valueFiles
+  # relative to its own path and refuses to escape it.
+  sources:
+    - repoURL: https://github.com/grandemeks/eks-platform.git
+      targetRevision: main
+      path: helm-charts/demo-app
+      helm:
+        valueFiles:
+          # $values resolves to the root of the source below, so this path is
+          # written from the repository root.
+          - $values/argocd/configs/demo-app/values-dev.yaml
+
+    - repoURL: https://github.com/grandemeks/eks-platform.git
+      targetRevision: main
+      # No path, so no manifests are generated from this source. It exists
+      # only to provide value files.
+      ref: values
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: demo
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
+
+    # Pod Security Admission on the namespace Argo creates. The chart does not
+    # own the namespace, so the labels are set here.
+    managedNamespaceMetadata:
+      labels:
+        pod-security.kubernetes.io/enforce: restricted
+        pod-security.kubernetes.io/enforce-version: latest
+        pod-security.kubernetes.io/audit: restricted
+        pod-security.kubernetes.io/warn: restricted
+
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 5m

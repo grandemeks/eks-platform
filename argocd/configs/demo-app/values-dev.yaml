@@ -1,19 +1,32 @@
-# Environment overrides for dev. The image block is rewritten by CI on every
-# successful build; nothing else here changes often.
+# Environment overrides for dev.
+#
+# The image block is rewritten by CI on every successful build; everything else
+# comes from Terraform outputs and changes only when the infrastructure does.
 
 image:
   repository: 385291933614.dkr.ecr.eu-central-1.amazonaws.com/eks-platform/demo-app
-  tag: "PLACEHOLDER"
-  digest: ""
+  tag: "514867e"
+  # The digest is what actually gets deployed. The tag above stays for humans
+  # reading the file and for the APP_VERSION label on metrics.
+  digest: "sha256:608a9552880f5b21f90ad05ea0bb8c92156b057f272709ff2682ba666de5c512"
 
-ingress:
-  enabled: false
-  host: incode-demo.grandemeks.tech
-  certificateArn: ""
+database:
+  host: eks-platform-dev.cty0csq288gi.eu-central-1.rds.amazonaws.com
+  port: 5432
+  name: demo
+  sslMode: require
 
 externalSecret:
-  enabled: false
-  remoteSecretName: ""
+  enabled: true
+  region: eu-central-1
+  # The RDS-managed secret. The exclamation mark is part of the name AWS
+  # generates for secrets it owns, and has to be quoted.
+  remoteSecretName: "rds!db-9c04691d-93a0-4424-b9e8-ac42d196b973-8Pn33i"
 
+# Enabled once kube-prometheus-stack is installed; the CRD does not exist yet.
 serviceMonitor:
+  enabled: false
+
+# Enabled in the next step, together with the ACM certificate.
+ingress:
   enabled: false

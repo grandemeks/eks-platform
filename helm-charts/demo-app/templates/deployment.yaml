@@ -78,22 +78,31 @@ spec:
             - name: APP_VERSION
               value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
             {{- if .Values.externalSecret.enabled }}
-            {{- $secret := include "demo-app.fullname" . }}
+            # Connection details are not sensitive and come from values. Keeping
+            # them out of the Secret means the Secret holds exactly one thing
+            # worth protecting, and a change of host is a values change rather
+            # than a credential rotation.
             - name: DB_HOST
-              valueFrom:
-                secretKeyRef: { name: {{ $secret }}-db, key: host }
+              value: {{ required "database.host must be set" .Values.database.host | quote }}
             - name: DB_PORT
-              valueFrom:
-                secretKeyRef: { name: {{ $secret }}-db, key: port }
+              value: {{ .Values.database.port | quote }}
             - name: DB_NAME
-              valueFrom:
-                secretKeyRef: { name: {{ $secret }}-db, key: dbname }
+              value: {{ .Values.database.name | quote }}
+            - name: DB_SSLMODE
+              value: {{ .Values.database.sslMode | quote }}
+
+            # Only the credential comes from the Secret that External Secrets
+            # syncs out of Secrets Manager.
             - name: DB_USER
               valueFrom:
-                secretKeyRef: { name: {{ $secret }}-db, key: username }
+                secretKeyRef:
+                  name: {{ include "demo-app.fullname" . }}-db
+                  key: username
             - name: DB_PASSWORD
               valueFrom:
-                secretKeyRef: { name: {{ $secret }}-db, key: password }
+                secretKeyRef:
+                  name: {{ include "demo-app.fullname" . }}-db
+                  key: password
             {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}

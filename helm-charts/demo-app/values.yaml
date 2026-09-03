@@ -1,5 +1,6 @@
-# Defaults and shape. Environment-specific overrides live in values-<env>.yaml,
-# which Argo CD layers on top of this file.
+# Defaults and shape. Environment-specific overrides live in
+# argocd/configs/demo-app/values-<env>.yaml, which Argo CD layers on top of
+# this file through a multi-source Application.
 
 replicaCount: 2
 
@@ -18,6 +19,15 @@ serviceAccount:
 
 service:
   port: 80
+
+# Connection details, not credentials. Populated from Terraform outputs.
+database:
+  host: ""
+  port: 5432
+  name: demo
+  # The RDS parameter group sets rds.force_ssl=1, so the server rejects any
+  # non-TLS connection. This is the client half of that.
+  sslMode: require
 
 resources:
   requests:
@@ -42,14 +52,17 @@ ingress:
   enabled: false
   host: ""
   certificateArn: ""
-  group: ""
 
 externalSecret:
   enabled: false
-  # Name of the AWS Secrets Manager secret holding the RDS master credentials.
+  region: eu-central-1
+  # Name of the AWS Secrets Manager secret RDS manages for the master user.
   remoteSecretName: ""
   refreshInterval: 1h
-  secretStoreName: aws-secretsmanager
+  # The operator's own service account, which carries the IRSA annotation. The
+  # application's service account stays without AWS permissions of any kind.
+  serviceAccountName: external-secrets
+  serviceAccountNamespace: external-secrets
 
 serviceMonitor:
   enabled: false
