@@ -1,0 +1,19 @@
+# Environment overrides for dev. The image block is rewritten by CI on every
+# successful build; nothing else here changes often.
+
+image:
+  repository: 385291933614.dkr.ecr.eu-central-1.amazonaws.com/eks-platform/demo-app
+  tag: "PLACEHOLDER"
+  digest: ""
+
+ingress:
+  enabled: false
+  host: incode-demo.grandemeks.tech
+  certificateArn: ""
+
+externalSecret:
+  enabled: false
+  remoteSecretName: ""
+
+serviceMonitor:
+  enabled: false
