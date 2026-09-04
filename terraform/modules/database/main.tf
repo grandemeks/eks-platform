@@ -44,7 +44,7 @@ resource "aws_security_group" "this" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "postgres" {
-  for_each = toset(var.allowed_security_group_ids)
+  for_each = var.allowed_security_group_ids
 
   security_group_id            = aws_security_group.this.id
   referenced_security_group_id = each.value
@@ -52,7 +52,7 @@ resource "aws_vpc_security_group_ingress_rule" "postgres" {
   from_port   = 5432
   to_port     = 5432
   ip_protocol = "tcp"
-  description = "PostgreSQL from the EKS cluster"
+  description = "PostgreSQL from ${each.key}"
 }
 
 # Deliberately no egress rule. A managed RDS instance initiates no outbound

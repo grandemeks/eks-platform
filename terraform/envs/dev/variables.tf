@@ -89,3 +89,15 @@ variable "gitops_target_revision" {
   type        = string
   default     = "main"
 }
+
+variable "dns_zone_name" {
+  description = "Delegated subdomain hosted in this account, owned by the bootstrap layer."
+  type        = string
+  default     = "incode-demo.grandemeks.tech"
+}
+
+variable "app_hostname" {
+  description = "Hostname the demo application is served on."
+  type        = string
+  default     = "incode-demo.grandemeks.tech"
+}

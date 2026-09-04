@@ -1,0 +1,66 @@
+{{- if .Values.ingress.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "demo-app.fullname" . }}
+  labels:
+    {{- include "demo-app.labels" . | nindent 4 }}
+  annotations:
+    # internet-facing puts the ALB in the public subnets, which the controller
+    # discovers through the kubernetes.io/role/elb tags the network module
+    # applies. Naming subnets here would duplicate that knowledge and drift.
+    alb.ingress.kubernetes.io/scheme: internet-facing
+
+    # target-type: ip registers pod IPs directly in the target group instead of
+    # node ports. It is what makes graceful shutdown actually work: the ALB
+    # deregisters the individual pod, rather than keeping a node in rotation
+    # and relying on kube-proxy to pick a different backend.
+    alb.ingress.kubernetes.io/target-type: ip
+
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP": 80}, {"HTTPS": 443}]'
+    # Plain HTTP is answered with a redirect rather than being closed, so a
+    # bookmark or a typed URL still reaches the application.
+    alb.ingress.kubernetes.io/ssl-redirect: '443'
+    alb.ingress.kubernetes.io/certificate-arn: {{ required "ingress.certificateArn must be set" .Values.ingress.certificateArn }}
+    # TLS 1.3 with 1.2 fallback. The older policies still allow 1.0 and 1.1.
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+
+    # The ALB health check hits the liveness endpoint, not readiness. Readiness
+    # is Kubernetes' concern — the kubelet uses it to decide endpoint
+    # membership, and the controller reflects that into the target group. If
+    # the ALB checked readiness too, a pod failing its database check would be
+    # marked unhealthy at two layers with different timings.
+    alb.ingress.kubernetes.io/healthcheck-path: /healthz
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: '10'
+    alb.ingress.kubernetes.io/healthy-threshold-count: '2'
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: '2'
+
+    # Deregistration delay must be shorter than terminationGracePeriodSeconds,
+    # or the ALB is still draining a target the kubelet has already killed.
+    # 15s here against 30s grace, with the application's own 5s readiness delay
+    # in between.
+    alb.ingress.kubernetes.io/target-group-attributes: deregistration_delay.timeout_seconds=15
+
+    # A named group lets several Ingresses share one load balancer. With one
+    # application it changes nothing; with five it is the difference between
+    # one ALB and five at $0.023/hour each.
+    alb.ingress.kubernetes.io/group.name: {{ .Values.ingress.group }}
+
+    # external-dns reads this and maintains the Route53 record. Terraform never
+    # learns the ALB's DNS name, so this is what closes the loop.
+    external-dns.alpha.kubernetes.io/hostname: {{ .Values.ingress.host }}
+spec:
+  ingressClassName: alb
+  rules:
+    - host: {{ .Values.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "demo-app.fullname" . }}
+                port:
+                  name: http
+{{- end }}

@@ -47,7 +47,7 @@ variable "service_account" {
 
 variable "policy_arns" {
   description = <<-EOT
-    Policies to attach, keyed by a stable name.
+    Existing policies to attach, keyed by a stable name.
 
     A map rather than a list because for_each keys must be known at plan time,
     and a policy ARN produced by another resource in the same apply is not.
@@ -58,10 +58,17 @@ variable "policy_arns" {
   default     = {}
 }
 
-variable "inline_policy_json" {
-  description = "Optional inline policy document, for permissions scoped to specific resource ARNs."
-  type        = string
-  default     = null
+variable "inline_policies" {
+  description = <<-EOT
+    Inline policy documents, keyed by a stable name.
+
+    Same reason as policy_arns: a policy built from ARNs that other modules
+    produce is not known at plan time, and count cannot depend on an unknown
+    value. With a map, the key is static and only the document is resolved
+    during apply.
+  EOT
+  type        = map(string)
+  default     = {}
 }
 
 variable "tags" {
@@ -112,11 +119,11 @@ resource "aws_iam_role_policy_attachment" "this" {
 }
 
 resource "aws_iam_role_policy" "inline" {
-  count = var.inline_policy_json != null ? 1 : 0
+  for_each = var.inline_policies
 
-  name   = "scoped"
+  name   = each.key
   role   = aws_iam_role.this.id
-  policy = var.inline_policy_json
+  policy = each.value
 }
 
 output "role_arn" {

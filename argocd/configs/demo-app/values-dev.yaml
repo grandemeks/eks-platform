@@ -1,13 +1,15 @@
 # Environment overrides for dev.
 #
-# The image block is rewritten by CI on every successful build; everything else
-# comes from Terraform outputs and changes only when the infrastructure does.
+# The image block is rewritten by CI on every successful build. The database
+# and secret references come from Terraform outputs and change whenever the
+# environment is recreated — RDS generates a new Secrets Manager secret each
+# time, so its ARN is not stable across a destroy/apply cycle.
 
 image:
   repository: 385291933614.dkr.ecr.eu-central-1.amazonaws.com/eks-platform/demo-app
   tag: "514867e"
-  # The digest is what actually gets deployed. The tag above stays for humans
-  # reading the file and for the APP_VERSION label on metrics.
+  # The digest is what actually gets deployed. The tag stays for humans and
+  # for the version label on metrics.
   digest: "sha256:608a9552880f5b21f90ad05ea0bb8c92156b057f272709ff2682ba666de5c512"
 
 database:
@@ -20,15 +22,20 @@ externalSecret:
   enabled: true
   region: eu-central-1
   # Full ARN, not the name. Secrets Manager appends a random six-character
-  # suffix to the ARN that is not part of the secret's name, so deriving the
-  # name from the ARN gives a value that does not resolve.
-  remoteSecretName: "arn:aws:secretsmanager:eu-central-1:385291933614:secret:rds!db-9c04691d-93a0-4424-b9e8-ac42d196b973-8Pn33i"
+  # suffix to the ARN that is not part of the secret's name, so deriving one
+  # from the other produces a value that does not resolve.
+  remoteSecretName: "arn:aws:secretsmanager:eu-central-1:385291933614:secret:rds!db-3db5ad8c-e279-49a2-922d-653e7edb02de-xzJ2hO"
   roleArn: "arn:aws:iam::385291933614:role/eks-platform-dev-demo-app-secrets"
-  
+
+ingress:
+  enabled: true
+  host: incode-demo.grandemeks.tech
+  # Issued by ACM in the bootstrap layer, validated through the delegated
+  # Route53 zone. Stable across environment rebuilds because it lives in the
+  # persistent stack.
+  certificateArn: "arn:aws:acm:eu-central-1:385291933614:certificate/19b5b5d7-021c-434c-9206-6c53b3d2cf29"
+  group: eks-platform-dev
+
 # Enabled once kube-prometheus-stack is installed; the CRD does not exist yet.
 serviceMonitor:
-  enabled: false
-
-# Enabled in the next step, together with the ACM certificate.
-ingress:
   enabled: false

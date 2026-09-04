@@ -15,16 +15,18 @@ variable "private_subnet_ids" {
 
 variable "allowed_security_group_ids" {
   description = <<-EOT
-    Security groups permitted to reach the database on the Postgres port.
-    This is the EKS cluster security group: with the AWS VPC CNI, pods share
-    the node's ENI and therefore the node's security groups, so allowing the
-    cluster security group is what actually lets a pod connect.
+    Security groups permitted to reach the database, keyed by a stable name.
 
-    Referencing a security group rather than a CIDR block means the rule stays
-    correct when subnets change, and it cannot accidentally widen to the whole
-    VPC.
+    A map rather than a list because for_each keys become resource addresses in
+    state and must be known at plan time. A security group ID produced by
+    another module in the same apply is not known until apply — only the value
+    is late, so the key is written in configuration and the value resolved
+    later.
+
+    This is the EKS cluster security group: under the AWS VPC CNI, pods share
+    the node's ENI and therefore its security groups.
   EOT
-  type        = list(string)
+  type        = map(string)
 }
 
 variable "kms_key_arn" {

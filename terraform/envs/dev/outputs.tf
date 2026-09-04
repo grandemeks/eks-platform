@@ -58,3 +58,11 @@ output "database_secret_arn" {
   description = "Full ARN of the RDS-managed credential, referenced by the SecretStore."
   value       = module.database.master_user_secret_arn
 }
+
+output "irsa_external_dns_role_arn" {
+  value = module.irsa_external_dns.role_arn
+}
+
+output "dns_zone_id" {
+  value = data.aws_route53_zone.demo.zone_id
+}

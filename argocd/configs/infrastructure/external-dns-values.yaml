@@ -1,0 +1,39 @@
+provider:
+  name: aws
+
+serviceAccount:
+  create: true
+  name: external-dns
+  annotations:
+    # Scoped to one hosted zone: ChangeResourceRecordSets is allowed only on
+    # the delegated subdomain. The apex domain is not in this account at all.
+    eks.amazonaws.com/role-arn: arn:aws:iam::385291933614:role/eks-platform-dev-external-dns
+
+# Only manage records inside the delegated subdomain, even if the role
+# somehow had wider access. Defence in depth: the IAM policy is the boundary,
+# this is the guard rail in front of it.
+domainFilters:
+  - incode-demo.grandemeks.tech
+
+# sync, not upsert-only. upsert-only never deletes a record, so a removed
+# Ingress leaves a Route53 entry pointing at a load balancer that no longer
+# exists — and the next environment to claim that name inherits a stale record.
+policy: sync
+
+# Ownership records carry this ID, so external-dns only ever modifies records
+# it created. Another tool, or a hand-made record, is left alone.
+txtOwnerId: eks-platform-dev
+
+sources:
+  - ingress
+
+# Long enough that a teardown does not leave records behind for long, short
+# enough not to hammer the Route53 API.
+interval: 1m
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 64Mi
+  limits:
+    memory: 128Mi
