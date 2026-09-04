@@ -1,0 +1,170 @@
+{{- if .Values.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "demo-app.fullname" . }}-slo
+  labels:
+    {{- include "demo-app.labels" . | nindent 4 }}
+spec:
+  groups:
+    # -------------------------------------------------------------------------
+    # Recording rules
+    #
+    # The burn-rate alerts below need the same error ratio over six different
+    # windows. Computing it inline six times would evaluate the same expensive
+    # aggregation repeatedly on every rule evaluation; recording it once per
+    # window and alerting on the recorded series is both cheaper and far easier
+    # to read when an alert fires and someone has to work out why.
+    # -------------------------------------------------------------------------
+    - name: {{ include "demo-app.fullname" . }}.sli
+      interval: 30s
+      rules:
+      {{- range $window := list "5m" "30m" "1h" "2h" "6h" "1d" "3d" }}
+        - record: demo_app:http_request_error_ratio:rate{{ $window }}
+          expr: |
+            sum(rate(http_requests_total{job="{{ include "demo-app.fullname" $ }}", status=~"5.."}[{{ $window }}]))
+            /
+            sum(rate(http_requests_total{job="{{ include "demo-app.fullname" $ }}"}[{{ $window }}]))
+      {{- end }}
+
+        # Latency SLI: the proportion of requests slower than the objective.
+        # The histogram buckets were chosen so 0.25 is a real bucket boundary,
+        # which means this is an exact count rather than an interpolation.
+        - record: demo_app:http_request_latency_violation_ratio:rate5m
+          expr: |
+            1 - (
+              sum(rate(http_request_duration_seconds_bucket{job="{{ include "demo-app.fullname" . }}", le="{{ .Values.slo.latencyObjectiveSeconds }}"}[5m]))
+              /
+              sum(rate(http_request_duration_seconds_count{job="{{ include "demo-app.fullname" . }}"}[5m]))
+            )
+
+    # -------------------------------------------------------------------------
+    # Multi-window, multi-burn-rate alerts
+    #
+    # The naive alert is "error rate above X for five minutes". It fires on
+    # every transient blip and stays quiet through a slow bleed that consumes
+    # the entire error budget over a week.
+    #
+    # Burn rate reframes it: at burn rate 1 the budget lasts exactly the SLO
+    # window. At 14.4 it is gone in two days. Each alert pairs a long window,
+    # which establishes that the burn is real, with a short one, which confirms
+    # it is still happening — so the alert resolves when the incident does
+    # instead of hanging for hours afterwards.
+    #
+    # Two page and two ticket. A page means someone wakes up; a ticket means it
+    # is looked at during working hours. That distinction is the whole point of
+    # having four thresholds rather than one.
+    # -------------------------------------------------------------------------
+    - name: {{ include "demo-app.fullname" . }}.slo
+      rules:
+        - alert: DemoAppErrorBudgetBurnFast
+          expr: |
+            demo_app:http_request_error_ratio:rate1h > ({{ .Values.slo.pageFastBurnRate }} * {{ .Values.slo.errorBudget }})
+            and
+            demo_app:http_request_error_ratio:rate5m > ({{ .Values.slo.pageFastBurnRate }} * {{ .Values.slo.errorBudget }})
+          for: 2m
+          labels:
+            severity: critical
+            service: demo-app
+          annotations:
+            summary: "demo-app is burning its error budget {{ .Values.slo.pageFastBurnRate }}x faster than sustainable"
+            description: >-
+              At this rate the entire 30-day error budget is gone in about two
+              days. Errors have been elevated for at least an hour and are
+              still elevated right now.
+            runbook_url: https://github.com/grandemeks/eks-platform/blob/main/docs/runbook.md#error-budget-burn
+
+        - alert: DemoAppErrorBudgetBurnModerate
+          expr: |
+            demo_app:http_request_error_ratio:rate6h > ({{ .Values.slo.pageSlowBurnRate }} * {{ .Values.slo.errorBudget }})
+            and
+            demo_app:http_request_error_ratio:rate30m > ({{ .Values.slo.pageSlowBurnRate }} * {{ .Values.slo.errorBudget }})
+          for: 5m
+          labels:
+            severity: critical
+            service: demo-app
+          annotations:
+            summary: "demo-app error budget burning {{ .Values.slo.pageSlowBurnRate }}x over six hours"
+            description: >-
+              Slower than the fast-burn case but sustained. Roughly 5% of the
+              budget is consumed every six hours at this rate.
+            runbook_url: https://github.com/grandemeks/eks-platform/blob/main/docs/runbook.md#error-budget-burn
+
+        - alert: DemoAppErrorBudgetBurnSlow
+          expr: |
+            demo_app:http_request_error_ratio:rate1d > ({{ .Values.slo.ticketFastBurnRate }} * {{ .Values.slo.errorBudget }})
+            and
+            demo_app:http_request_error_ratio:rate2h > ({{ .Values.slo.ticketFastBurnRate }} * {{ .Values.slo.errorBudget }})
+          for: 15m
+          labels:
+            severity: warning
+            service: demo-app
+          annotations:
+            summary: "demo-app error budget burning {{ .Values.slo.ticketFastBurnRate }}x over a day"
+            description: >-
+              Not urgent enough to page, but the budget will not survive the
+              month if this continues. Investigate during working hours.
+
+        - alert: DemoAppErrorBudgetBurnVerySlow
+          expr: |
+            demo_app:http_request_error_ratio:rate3d > ({{ .Values.slo.ticketSlowBurnRate }} * {{ .Values.slo.errorBudget }})
+            and
+            demo_app:http_request_error_ratio:rate6h > ({{ .Values.slo.ticketSlowBurnRate }} * {{ .Values.slo.errorBudget }})
+          for: 1h
+          labels:
+            severity: warning
+            service: demo-app
+          annotations:
+            summary: "demo-app is slowly bleeding error budget"
+            description: >-
+              The exact case a simple threshold alert never catches: an error
+              rate low enough to look like noise, sustained long enough to
+              exhaust the budget.
+
+    # -------------------------------------------------------------------------
+    # Symptom alerts
+    #
+    # These are not SLO alerts. They exist because when a burn-rate alert
+    # fires, the responder needs to know what broke — and because some failures
+    # matter before they show up in the error rate.
+    # -------------------------------------------------------------------------
+    - name: {{ include "demo-app.fullname" . }}.symptoms
+      rules:
+        - alert: DemoAppDatabaseUnreachable
+          expr: app_database_up{job="{{ include "demo-app.fullname" . }}"} == 0
+          for: 2m
+          labels:
+            severity: critical
+            service: demo-app
+          annotations:
+            summary: "demo-app cannot reach its database"
+            description: >-
+              Readiness fails while this holds, so the pod is out of the load
+              balancer. If every replica is affected the service is down.
+
+        - alert: DemoAppLatencyObjectiveViolated
+          expr: |
+            demo_app:http_request_latency_violation_ratio:rate5m > {{ .Values.slo.latencyErrorBudget }}
+          for: 10m
+          labels:
+            severity: warning
+            service: demo-app
+          annotations:
+            summary: "More than {{ .Values.slo.latencyErrorBudget }} of requests exceed {{ .Values.slo.latencyObjectiveSeconds }}s"
+
+        - alert: DemoAppNoTraffic
+          # absent() fires when the series does not exist at all, which is what
+          # happens when every replica is down or scraping has broken. A rate
+          # comparison would never fire here, because there would be no series
+          # to compare.
+          expr: absent(up{job="{{ include "demo-app.fullname" . }}"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+            service: demo-app
+          annotations:
+            summary: "Prometheus has no healthy demo-app target"
+            description: >-
+              Either every replica is gone or the ServiceMonitor has stopped
+              matching. Both look identical from here, and both are urgent.
+{{- end }}

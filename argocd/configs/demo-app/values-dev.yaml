@@ -33,9 +33,17 @@ ingress:
   # Issued by ACM in the bootstrap layer, validated through the delegated
   # Route53 zone. Stable across environment rebuilds because it lives in the
   # persistent stack.
-  certificateArn: "arn:aws:acm:eu-central-1:385291933614:certificate/19b5b5d7-021c-434c-9206-6c53b3d2cf29"
+  certificateArn: "arn:aws:acm:eu-central-1:385291933614:certificate/19d20204-58a8-4fb6-b70c-049295d1a4bb"
   group: eks-platform-dev
 
-# Enabled once kube-prometheus-stack is installed; the CRD does not exist yet.
+# ---------------------------------------------------------------------------
+# APPEND / MERGE into argocd/configs/demo-app/values-dev.yaml
+# ---------------------------------------------------------------------------
 serviceMonitor:
-  enabled: false
+  enabled: true
+
+prometheusRule:
+  enabled: true
+
+dashboard:
+  enabled: true

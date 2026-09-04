@@ -69,3 +69,38 @@ serviceMonitor:
 
 # Extra environment variables, appended to the ones the chart always sets.
 extraEnv: []
+
+# ---------------------------------------------------------------------------
+# APPEND these blocks to helm-charts/demo-app/values.yaml
+# ---------------------------------------------------------------------------
+
+# Service level objectives, expressed as values rather than baked into the
+# alert expressions. Changing the target is a values change, and the same
+# chart can carry a stricter objective in production than in dev.
+slo:
+  # 99.5% availability over 30 days. The error budget is what is left over:
+  # 0.5% of requests may fail before the objective is missed.
+  errorBudget: 0.005
+
+  # Burn rates, from the Google SRE workbook. At burn rate 1 the budget lasts
+  # exactly the SLO window; at 14.4 it is exhausted in two days.
+  #
+  # 14.4 over 1h  — 2% of the budget in an hour. Page.
+  # 6    over 6h  — 5% of the budget in six hours. Page.
+  # 3    over 1d  — 10% of the budget in a day. Ticket.
+  # 1    over 3d  — the slow bleed a threshold alert never catches. Ticket.
+  pageFastBurnRate: 14.4
+  pageSlowBurnRate: 6
+  ticketFastBurnRate: 3
+  ticketSlowBurnRate: 1
+
+  # 99% of requests under 250ms. The histogram buckets in the application put
+  # a boundary exactly at 0.25, so this is counted rather than interpolated.
+  latencyObjectiveSeconds: 0.25
+  latencyErrorBudget: 0.01
+
+prometheusRule:
+  enabled: false
+
+dashboard:
+  enabled: false
