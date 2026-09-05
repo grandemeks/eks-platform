@@ -17,6 +17,16 @@ module "network" {
 data "aws_kms_alias" "platform" {
   name = "alias/${var.project}"
 }
+# The identity running this apply, resolved to its underlying IAM role.
+#
+# An assumed role presents as arn:aws:sts::<account>:assumed-role/<role>/<session>,
+# which is a session ARN and not something an EKS access entry accepts. This
+# data source resolves it back to the role ARN that issued it.
+data "aws_caller_identity" "current" {}
+
+data "aws_iam_session_context" "current" {
+  arn = data.aws_caller_identity.current.arn
+}
 
 module "eks" {
   source = "../../modules/eks"
@@ -30,7 +40,10 @@ module "eks" {
   kms_key_arn         = data.aws_kms_alias.platform.target_key_arn
   public_access_cidrs = var.cluster_public_access_cidrs
 
-  cluster_admin_principal_arns = var.cluster_admin_principal_arns
+  cluster_admin_principal_arns = distinct(concat(
+    var.cluster_admin_principal_arns,
+    [data.aws_iam_session_context.current.issuer_arn],
+  ))
 }
 
 module "database" {
