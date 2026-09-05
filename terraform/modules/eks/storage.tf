@@ -12,6 +12,20 @@ resource "kubernetes_storage_class_v1" "gp3" {
     annotations = {
       "storageclass.kubernetes.io/is-default-class" = "true"
     }
+
+  # Terraform infers dependencies from references, and this resource
+  # references only the KMS key — nothing that tells it a cluster must exist
+  # and be reachable first. Without this the provider tries to authenticate
+  # against an API server that is up but has not yet granted the caller access,
+  # and returns a bare "Unauthorized" that names nothing.
+  #
+  # The access policy association is the real prerequisite: the CI role
+  # authenticates through it. The node group is listed too, because a cluster
+  # with no schedulable nodes is not a useful target for a storage class.
+  depends_on = [
+    aws_eks_access_policy_association.admin,
+    aws_eks_node_group.this,
+  ]
   }
 
   storage_provisioner = "ebs.csi.aws.com"

@@ -177,6 +177,12 @@ resource "aws_db_instance" "this" {
   # queue changes for the maintenance window instead.
   apply_immediately = true
 
+  # The log groups must exist before the instance does. RDS creates them itself
+  # the moment it starts exporting, with retention set to never expire, and
+  # then Terraform's own resource collides with what RDS already made. Creating
+  # them first is what makes the retention setting stick.
+  depends_on = [aws_cloudwatch_log_group.postgres]
+
   tags = merge(var.tags, { Name = var.name })
 
   lifecycle {
