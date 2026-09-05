@@ -27,14 +27,26 @@ data "aws_iam_policy_document" "github_terraform_assume" {
       values   = ["sts.amazonaws.com"]
     }
 
-    # Only these two entry points. A feature branch or a tag cannot assume
-    # this role, even from within this same repository.
+    # Three entry points, and no more.
+    #
+    # The third exists because GitHub rewrites the sub claim when a job
+    # declares an `environment:`. A job running on main with an environment
+    # does NOT present ref:refs/heads/main — it presents environment:dev
+    # instead. Adding the approval gate is therefore what broke authentication
+    # the first time, which is not obvious from the error: STS reports only
+    # "Not authorized to perform sts:AssumeRoleWithWebIdentity" and never says
+    # which claim failed to match.
+    #
+    # This is still tighter than a wildcard: a run can only assume the role
+    # from main, from a pull request, or through the dev environment, which is
+    # itself gated on a human approval.
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
       values = [
         "${local.github_sub_prefix}:ref:refs/heads/main",
         "${local.github_sub_prefix}:pull_request",
+        "${local.github_sub_prefix}:environment:dev",
       ]
     }
   }
