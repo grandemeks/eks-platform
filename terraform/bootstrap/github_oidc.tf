@@ -53,3 +53,83 @@ resource "aws_iam_role_policy_attachment" "github_terraform_admin" {
   role       = aws_iam_role.github_terraform.name
   policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
 }
+
+# --- Application image build and push ------------------------------------------
+#
+# A separate identity from the Terraform role, and genuinely least privilege:
+# push to exactly one ECR repository, use one KMS key, nothing else. A job that
+# builds a container image has no reason to be able to delete a database, and
+# keeping the two apart means a compromised build cannot become a compromised
+# account.
+data "aws_iam_policy_document" "github_ecr_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["${local.github_sub_prefix}:ref:refs/heads/main"]
+    }
+  }
+}
+
+data "aws_iam_policy_document" "github_ecr" {
+  statement {
+    sid       = "AuthToRegistry"
+    effect    = "Allow"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"] # this action does not support resource-level permissions
+  }
+
+  statement {
+    sid    = "PushToDemoAppRepositoryOnly"
+    effect = "Allow"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:CompleteLayerUpload",
+      "ecr:InitiateLayerUpload",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart",
+      "ecr:BatchGetImage",
+      "ecr:DescribeImages",
+    ]
+    resources = [aws_ecr_repository.app.arn]
+  }
+
+  statement {
+    sid    = "UseKeyForImageEncryption"
+    effect = "Allow"
+    actions = [
+      "kms:Encrypt",
+      "kms:Decrypt",
+      "kms:GenerateDataKey",
+      "kms:DescribeKey",
+    ]
+    resources = [aws_kms_key.platform.arn]
+  }
+}
+
+resource "aws_iam_role" "github_ecr" {
+  name                 = "${var.project}-github-ecr"
+  description          = "Assumed by GitHub Actions to build and push the demo application image"
+  assume_role_policy   = data.aws_iam_policy_document.github_ecr_assume.json
+  max_session_duration = 3600
+}
+
+resource "aws_iam_role_policy" "github_ecr" {
+  name   = "ecr-push"
+  role   = aws_iam_role.github_ecr.id
+  policy = data.aws_iam_policy_document.github_ecr.json
+}

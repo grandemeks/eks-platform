@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// Config is populated entirely from the environment. Nothing about where this
-// runs is compiled into the binary, so the same image is promoted unchanged
-// from a laptop to the cluster — the twelve-factor rule that makes an image
+// Config is populated entirely from the environment. 
+// Nothing about where this runs is compiled into the binary, so the same image is promoted unchanged
+// from a laptop to the cluster - the twelve-factor rule that makes an image
 // reproducible.
 type Config struct {
 	Port            string

@@ -36,3 +36,8 @@ output "acm_certificate_arn" {
 output "app_hostname" {
   value = var.app_hostname
 }
+
+output "github_ecr_role_arn" {
+  description = "Set as the AWS_ECR_ROLE repository variable in GitHub."
+  value       = aws_iam_role.github_ecr.arn
+}

@@ -1,0 +1,225 @@
+name: pr checks
+
+# Everything that validates a change before it can merge, in one place, so a
+# pull request has one set of status checks rather than several.
+#
+# Deliberately has no apply path and no write access to anything. The workflow
+# that changes infrastructure is a separate file with no pull_request trigger
+# at all — a structural boundary rather than an `if:` condition that could be
+# written wrong.
+on:
+  pull_request:
+    paths:
+      - 'terraform/**'
+      - 'helm-charts/**'
+      - 'argocd/configs/**'
+      - 'app/**'
+      - '.github/workflows/pr-checks.yml'
+
+permissions:
+  contents: read
+  id-token: write        # OIDC, so plan can read AWS state
+  pull-requests: write   # to post the plan as a comment
+
+concurrency:
+  # A push that lands while an earlier run is still going makes that run stale,
+  # so cancelling it is correct rather than wasteful.
+  group: pr-checks-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  AWS_REGION: eu-central-1
+  TF_VERSION: "1.13.3"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  terraform:
+    name: terraform (${{ matrix.stack }})
+    runs-on: ubuntu-latest
+
+    strategy:
+      # Both stacks run even if one fails, so a reviewer sees the whole picture
+      # in one go instead of discovering the second failure after fixing the
+      # first.
+      fail-fast: false
+      matrix:
+        stack: [bootstrap, envs/dev]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          # The wrapper captures stdout so the plan can be posted to the PR.
+          terraform_wrapper: true
+
+      # No access keys anywhere. GitHub issues a short-lived OIDC token, AWS
+      # exchanges it for temporary credentials, and the role's trust policy
+      # restricts that exchange to this repository. The role ARN is a
+      # repository variable rather than a secret: it is useless to anyone
+      # without the trust relationship.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-plan-${{ github.run_id }}
+
+      - name: terraform fmt
+        id: fmt
+        working-directory: terraform/${{ matrix.stack }}
+        run: terraform fmt -check -recursive -diff
+        continue-on-error: true
+
+      - name: terraform init
+        working-directory: terraform/${{ matrix.stack }}
+        run: terraform init -input=false
+
+      - name: terraform validate
+        id: validate
+        working-directory: terraform/${{ matrix.stack }}
+        run: terraform validate -no-color
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: latest
+
+      - name: tflint
+        id: tflint
+        working-directory: terraform/${{ matrix.stack }}
+        run: |
+          tflint --init
+          tflint --format compact --recursive
+        continue-on-error: true
+
+      # Static analysis of the Terraform itself: unencrypted storage, public
+      # access, permissive security groups. Catches the class of mistake a plan
+      # output shows plainly but a human skims past.
+      - name: Trivy config scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: terraform/${{ matrix.stack }}
+          severity: HIGH,CRITICAL
+          exit-code: '0'   # advisory here; findings belong in the review
+          format: table
+
+      - name: terraform plan
+        id: plan
+        working-directory: terraform/${{ matrix.stack }}
+        run: terraform plan -input=false -no-color -lock-timeout=5m
+        continue-on-error: true
+
+      - name: Comment the plan on the pull request
+        uses: actions/github-script@v7
+        env:
+          STACK: ${{ matrix.stack }}
+          PLAN: ${{ steps.plan.outputs.stdout }}
+        with:
+          script: |
+            const stack = process.env.STACK;
+            // GitHub rejects comments over 65536 characters. A truncated plan
+            // pointing at the run is more useful than a failed comment.
+            const raw = process.env.PLAN || '(no output)';
+            const plan = raw.length > 60000
+              ? raw.slice(0, 60000) + '\n\n... truncated, see the workflow run'
+              : raw;
+
+            const marker = `### Terraform plan — \`${stack}\``;
+            const body = [
+              marker, '',
+              '| check | result |', '| --- | --- |',
+              `| fmt | \`${{ steps.fmt.outcome }}\` |`,
+              `| validate | \`${{ steps.validate.outcome }}\` |`,
+              `| tflint | \`${{ steps.tflint.outcome }}\` |`,
+              `| plan | \`${{ steps.plan.outcome }}\` |`,
+              '', '<details><summary>Plan output</summary>', '',
+              '```terraform', plan, '```', '', '</details>',
+            ].join('\n');
+
+            // Update this stack's existing comment rather than adding one per
+            // push, so the PR stays readable.
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner, repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(c =>
+              c.user.type === 'Bot' && c.body.startsWith(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                comment_id: existing.id, body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: context.issue.number, body,
+              });
+            }
+
+      # Formatting and plan failures block the merge. tflint and Trivy are
+      # advisory: they flag things worth discussing rather than things that are
+      # automatically wrong, and review is the right place for that.
+      - name: Fail on plan or formatting errors
+        if: steps.plan.outcome == 'failure' || steps.fmt.outcome == 'failure'
+        run: exit 1
+
+  # ---------------------------------------------------------------------------
+  helm:
+    name: helm
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+
+      - name: helm lint
+        run: |
+          helm lint helm-charts/demo-app \
+            -f argocd/configs/demo-app/values-dev.yaml
+
+      # Argo CD renders this chart, not this pipeline, so a template error
+      # would otherwise surface as an Application stuck in ComparisonError,
+      # visible only to whoever opens the Argo UI. Rendering here moves the
+      # failure to the pull request. A chart that lints cleanly can still fail
+      # to render: a missing required value only appears at template time.
+      - name: helm template
+        run: |
+          helm template demo-app helm-charts/demo-app \
+            -f argocd/configs/demo-app/values-dev.yaml \
+            --namespace demo > /tmp/rendered.yaml
+          echo "Rendered objects:"
+          grep -E '^kind:' /tmp/rendered.yaml | sort | uniq -c
+
+      # Static analysis of the rendered manifests: privileged containers,
+      # missing limits, writable root filesystems. Same idea as the Terraform
+      # config scan, other half of the stack.
+      - name: Trivy manifest scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: /tmp/rendered.yaml
+          severity: HIGH,CRITICAL
+          exit-code: '0'
+          format: table
+
+  # ---------------------------------------------------------------------------
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Gitleaks needs history to scan the commits a PR introduces, not
+          # just the final tree. A credential added and then removed in a later
+          # commit is still in the history and still leaked.
+          fetch-depth: 0
+
+      # A leaked credential in a public repository is an incident, not a
+      # hypothetical. This is the last gate before merge.
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

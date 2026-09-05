@@ -1,14 +1,14 @@
 variable "app_hostname" {
-  description = "Fully qualified hostname the demo application is served on."
+  description = "Fully qualified hostname the demo application runs on"
   type        = string
   default     = "incode-demo.grandemeks.tech"
 }
 
 variable "additional_hostnames" {
   description = <<-EOT
-    Extra names on the same certificate. Grafana shares the application's load
+    Extra names on the same certificate. Grafana shares app's load
     balancer through the ALB group annotation, so it needs to be on the same
-    certificate — one ALB and one certificate rather than two of each.
+    certificate - single ALB and Certificate rather than two of each.
   EOT
   type        = list(string)
   default     = ["grafana.incode-demo.grandemeks.tech"]

@@ -1,0 +1,149 @@
+name: environment
+
+# The only workflow that changes infrastructure. Two ways in:
+#
+#   push to main touching terraform/**   apply the reviewed change
+#   manual dispatch                      bring the environment up or down
+#
+# There is deliberately no pull_request trigger. Plans run in pr-checks.yml,
+# which has no apply path. Keeping them in separate files means the separation
+# is structural: a mistake in an `if:` expression cannot cause a pull request
+# to apply infrastructure, because the trigger does not exist here at all.
+#
+# The manual dispatch exists because the brief asks for the cluster to be torn
+# down when nobody is working on it. A note in the README asking someone to
+# remember is not a control; a workflow is. It also guarantees teardown always
+# runs the same ordered script rather than whatever sequence of commands the
+# operator recalls at the time — which is how orphaned load balancers and
+# unattached volumes accumulate.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'terraform/**'
+      - '.github/workflows/environment.yml'
+
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Bring the environment up or tear it down'
+        required: true
+        type: choice
+        options: [up, down]
+      confirm:
+        description: 'Type the environment name to confirm (eks-platform-dev)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  # Never cancel in flight: a half-applied change is worse than a queued one,
+  # and an apply must never overlap a destroy against the same state.
+  group: environment
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-central-1
+  TF_VERSION: "1.13.3"
+  CLUSTER_NAME: eks-platform-dev
+
+jobs:
+  environment:
+    runs-on: ubuntu-latest
+
+    # A GitHub Environment with a required reviewer. The job pauses here until
+    # someone approves, and the approval is recorded against the run. Without
+    # it, a merge to main applies to live infrastructure unattended.
+    environment: dev
+
+    steps:
+      # Typed confirmation on the manual path, because workflow_dispatch has no
+      # undo and the down path deletes a database.
+      - name: Verify confirmation
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "${{ inputs.confirm }}" != "$CLUSTER_NAME" ]; then
+            echo "Confirmation did not match '$CLUSTER_NAME'. Refusing to proceed."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_TERRAFORM_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-env-${{ github.run_id }}
+
+      # Bootstrap first: the environment stack looks up the shared KMS key by
+      # alias and the certificate by ARN, both owned by bootstrap. On a normal
+      # change this is a no-op.
+      - name: Apply bootstrap
+        if: github.event_name == 'push' || inputs.action == 'up'
+        working-directory: terraform/bootstrap
+        run: |
+          terraform init -input=false
+          terraform apply -input=false -auto-approve -lock-timeout=10m
+
+      - name: Apply dev environment
+        if: github.event_name == 'push' || inputs.action == 'up'
+        working-directory: terraform/envs/dev
+        run: |
+          terraform init -input=false
+          terraform apply -input=false -auto-approve -lock-timeout=10m
+
+      # A rebuilt environment produces new identifiers: RDS generates a fresh
+      # Secrets Manager secret, the VPC is new, and a new cluster means a new
+      # OIDC provider and new IRSA role ARNs. Argo reads those from Git, so
+      # until they are synced and committed the application cannot reconcile.
+      # Surfacing them here is what turns a silent failure into a visible step.
+      - name: Report values that need syncing
+        if: github.event_name == 'push' || inputs.action == 'up'
+        working-directory: terraform/envs/dev
+        run: |
+          {
+            echo "### Environment is up"
+            echo
+            echo "Run \`scripts/sync-values.sh\` locally and commit if these differ from \`argocd/configs\`:"
+            echo
+            echo '```'
+            terraform output -raw database_endpoint   && echo
+            terraform output -raw database_secret_arn && echo
+            terraform output -raw vpc_id              && echo
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The script, not a bare terraform destroy. It removes the Helm releases
+      # from state first, deletes the Kubernetes objects that own AWS resources
+      # Terraform cannot see, waits for the controllers to finish, and verifies
+      # afterwards that nothing is still billing.
+      - name: Tear the environment down
+        if: github.event_name == 'workflow_dispatch' && inputs.action == 'down'
+        run: ./scripts/teardown.sh -auto-approve
+
+      - name: Confirm nothing is left running
+        if: github.event_name == 'workflow_dispatch' && inputs.action == 'down'
+        run: |
+          {
+            echo "### Environment torn down"
+            echo
+            echo '```'
+            echo "clusters:       $(aws eks list-clusters --query 'clusters' --output text)"
+            echo "vpcs:           $(aws ec2 describe-vpcs --query 'Vpcs[?!IsDefault].VpcId' --output text)"
+            echo "load balancers: $(aws elbv2 describe-load-balancers --query 'LoadBalancers[].LoadBalancerName' --output text)"
+            echo "volumes:        $(aws ec2 describe-volumes --filters Name=status,Values=available --query 'Volumes[].VolumeId' --output text)"
+            echo "rds:            $(aws rds describe-db-instances --query 'DBInstances[].DBInstanceIdentifier' --output text)"
+            echo '```'
+            echo
+            echo "Empty values mean nothing is billing. The bootstrap layer stays up by design:"
+            echo "state bucket, KMS key, DNS zone, ECR, certificate, CI roles — about \$1.50/month."
+          } >> "$GITHUB_STEP_SUMMARY"

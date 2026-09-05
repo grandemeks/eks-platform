@@ -1,5 +1,5 @@
-# Argo CD is bootstrapped by Terraform rather than by Argo CD, for the obvious
-# reason. Its values therefore live with the Terraform that installs it, not in
+# Argo CD is bootstrapped by Terraform rather than by Argo CD
+# Its values therefore live with the Terraform that installs it, not in
 # argocd/configs/ with everything Argo manages itself. That boundary is the
 # point: exactly one component is installed imperatively, and it is the one that
 # makes everything else declarative.

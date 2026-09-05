@@ -1,0 +1,210 @@
+name: app release
+
+# Builds, scans, signs and publishes the application image, then writes the new
+# reference into the Argo CD values file.
+#
+# This workflow does not deploy. Its last action is a commit; Argo CD notices
+# the change and reconciles the cluster. That separation is the whole point of
+# GitOps — the pipeline needs no cluster credentials at all, and the deployed
+# state is whatever is in Git rather than whatever the last job happened to do.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - '.github/workflows/app-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # to commit the updated image reference
+  id-token: write   # OIDC, for both AWS and keyless signing
+
+concurrency:
+  group: app-release
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REGISTRY: 385291933614.dkr.ecr.eu-central-1.amazonaws.com
+  ECR_REPOSITORY: eks-platform/demo-app
+  VALUES_FILE: argocd/configs/demo-app/values-dev.yaml
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A token that can push back to the repository. The default
+          # GITHUB_TOKEN works because permissions.contents is write above.
+          persist-credentials: true
+
+      - name: Derive image tag
+        id: meta
+        run: |
+          # Short commit SHA. Human-readable, unique, and traceable back to the
+          # exact source that produced the image.
+          echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # --- Gate 1: dependency vulnerabilities --------------------------------
+      #
+      # Runs against the source tree, before anything is built. A vulnerable
+      # dependency should fail here rather than after a five-minute build, and
+      # the finding points at go.mod rather than at a layer digest.
+      - name: Trivy dependency scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: app
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true   # a CVE with no available fix is not actionable here
+          exit-code: '1'
+          format: table
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          # The narrow role: push to one ECR repository, use one KMS key, and
+          # nothing else. Deliberately not the Terraform role — a job that
+          # builds a container image has no reason to be able to delete a
+          # database.
+          role-to-assume: ${{ vars.AWS_ECR_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          role-session-name: gha-release-${{ github.run_id }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Built locally first so the image can be scanned before it is published.
+      # Pushing and then scanning would mean a vulnerable image is already
+      # available to pull.
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          push: false
+          load: true
+          tags: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.tag }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # --- Gate 2: image vulnerabilities -------------------------------------
+      #
+      # The base is distroless static, so this should report almost nothing.
+      # That is the point: a near-empty result here is evidence the base image
+      # choice was correct, and any finding is genuinely ours.
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.tag }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
+
+      # --- SBOM ---------------------------------------------------------------
+      #
+      # An inventory of everything inside the image. The value is not today —
+      # it is the morning a new CVE lands and the question is which images
+      # contain the affected package. Without an SBOM that is an archaeology
+      # exercise across every build.
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.tag }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+
+      - name: Push image
+        run: docker push "${ECR_REGISTRY}/${ECR_REPOSITORY}:${{ steps.meta.outputs.tag }}"
+
+      - name: Resolve image digest
+        id: digest
+        run: |
+          # The digest, not the tag, is what gets deployed. ECR tags are
+          # immutable here so the tag is safe too, but a signature covers a
+          # digest, and deploying by digest is what makes verification mean
+          # anything.
+          DIGEST=$(aws ecr describe-images \
+            --repository-name "$ECR_REPOSITORY" \
+            --image-ids imageTag="${{ steps.meta.outputs.tag }}" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "Digest: $DIGEST"
+
+      # --- Signing -----------------------------------------------------------
+      #
+      # Keyless: the signing identity is this workflow's OIDC token, certified
+      # by Fulcio and recorded in the Rekor transparency log. There is no
+      # private key to store, rotate or leak, and the signature records which
+      # workflow in which repository produced the image.
+      #
+      # Verification is not enforced in the cluster yet. A Kyverno
+      # verifyImages policy would reject any image without a signature from
+      # this identity; that is the next step and the reason to sign now.
+      - uses: sigstore/cosign-installer@v3
+
+      - name: Sign the image
+        run: |
+          cosign sign --yes \
+            "${ECR_REGISTRY}/${ECR_REPOSITORY}@${{ steps.digest.outputs.digest }}"
+
+      - name: Attach SBOM as an attestation
+        run: |
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            "${ECR_REGISTRY}/${ECR_REPOSITORY}@${{ steps.digest.outputs.digest }}"
+
+      # --- Handoff to Argo CD -------------------------------------------------
+      - name: Update the image reference in Git
+        run: |
+          python3 - "$VALUES_FILE" "${{ steps.meta.outputs.tag }}" "${{ steps.digest.outputs.digest }}" <<'PYEOF'
+          import re, sys
+          path, tag, digest = sys.argv[1:4]
+          src = open(path).read()
+          for key, value in (("tag", tag), ("digest", digest)):
+              pattern = re.compile(r'^(\s*)%s:[ \t]*\S.*$' % key, re.MULTILINE)
+              src, n = pattern.subn(lambda m: '%s%s: "%s"' % (m.group(1), key, value), src, count=1)
+              if n == 0:
+                  sys.exit("key %s not found in %s" % (key, path))
+          open(path, "w").write(src)
+          PYEOF
+          git --no-pager diff -- "$VALUES_FILE"
+
+      - name: Commit and push
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$VALUES_FILE"
+          if git diff --cached --quiet; then
+            echo "Image reference unchanged, nothing to commit."
+            exit 0
+          fi
+          # [skip ci] is load-bearing: without it this push retriggers the
+          # workflow, which rebuilds, commits again, and loops.
+          git commit -m "chore(release): demo-app ${{ steps.meta.outputs.tag }} [skip ci]"
+          git push
+
+      - name: Summary
+        run: |
+          {
+            echo "### Released demo-app \`${{ steps.meta.outputs.tag }}\`"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| digest | \`${{ steps.digest.outputs.digest }}\` |"
+            echo "| dependency scan | passed |"
+            echo "| image scan | passed |"
+            echo "| SBOM | attached as attestation |"
+            echo "| signature | keyless, recorded in Rekor |"
+            echo
+            echo "Argo CD reconciles from the committed values file. This job never touched the cluster."
+          } >> "$GITHUB_STEP_SUMMARY"
