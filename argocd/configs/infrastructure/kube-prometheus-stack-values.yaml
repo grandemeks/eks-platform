@@ -28,6 +28,12 @@ prometheus:
     # them is a later addition.
     enableFeatures:
       - exemplar-storage
+    # Tempo's metrics generator writes span-derived RED metrics and the service
+    # graph here over remote write. Prometheus rejects those writes unless the
+    # receiver is explicitly enabled, and it does so silently from Tempo's
+    # point of view — the generator retries, no service graph ever appears, and
+    # nothing in Grafana suggests why.
+    enableRemoteWriteReceiver: true
 
     resources:
       requests:
@@ -157,6 +163,61 @@ grafana:
       external-dns.alpha.kubernetes.io/hostname: grafana.incode-demo.grandemeks.tech
     hosts:
       - grafana.incode-demo.grandemeks.tech
+      
+  # Provisioned as configuration rather than clicked into the UI. A datasource
+  # created by hand lives only in Grafana's database, so it disappears with the
+  # volume and has to be recreated from memory after every teardown.
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      uid: loki
+      access: proxy
+      url: http://loki.monitoring.svc.cluster.local:3100
+      jsonData:
+        # Turns a trace_id in a log line into a link that opens the trace.
+        # This is the log-to-trace direction of correlation.
+        derivedFields:
+          - name: TraceID
+            matcherType: label
+            matcherRegex: trace_id
+            url: "$${__value.raw}"
+            datasourceUid: tempo
+
+    - name: Tempo
+      type: tempo
+      uid: tempo
+      access: proxy
+      url: http://tempo.monitoring.svc.cluster.local:3100
+      jsonData:
+        # Trace to logs: from a span, jump to the logs that pod emitted in the
+        # same window, already filtered to the right namespace and pod.
+        tracesToLogsV2:
+          datasourceUid: loki
+          spanStartTimeShift: "-5m"
+          spanEndTimeShift: "5m"
+          tags:
+            - key: service.name
+              value: service_name
+          filterByTraceID: true
+
+        # Trace to metrics: from a span, jump to the RED metrics for that
+        # service. Tempo's own generator produces these.
+        tracesToMetrics:
+          datasourceUid: prometheus
+          spanStartTimeShift: "-5m"
+          spanEndTimeShift: "5m"
+          tags:
+            - key: service.name
+              value: service
+
+        # The service graph, drawn from parent-child span relationships rather
+        # than from a diagram someone maintains by hand.
+        serviceMap:
+          datasourceUid: prometheus
+
+        nodeGraph:
+          enabled: true 
+  
 
 # --- Exporters ----------------------------------------------------------------
 nodeExporter:

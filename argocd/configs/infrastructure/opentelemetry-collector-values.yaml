@@ -1,0 +1,173 @@
+# One collector, in DaemonSet mode, doing two jobs: reading container logs off
+# the node and receiving OTLP traces from workloads on that same node.
+#
+# The alternative is the agent-plus-gateway topology — a DaemonSet that
+# collects and a Deployment that aggregates, filters and exports. That is the
+# right shape once you need tail sampling, cross-node aggregation, or a single
+# egress point to a vendor. Here it would be two hops and roughly twice the
+# memory for a cluster with two nodes and one application.
+#
+# DaemonSet rather than Deployment is not optional for the log half: the
+# filelog receiver reads /var/log/pods off the host, so it has to run on every
+# host whose logs matter.
+
+mode: daemonset
+
+image:
+  # The contrib distribution. The core image does not include the k8sattributes
+  # processor or the Loki exporter path, which is most of what this does.
+  repository: otel/opentelemetry-collector-contrib
+
+fullnameOverride: otel-collector
+
+presets:
+  # Reads container logs from /var/log/pods and parses the CRI format. Replaces
+  # Promtail or Alloy entirely — one agent for logs and traces rather than two
+  # daemonsets doing adjacent jobs.
+  logsCollection:
+    enabled: true
+    includeCollectorLogs: false
+
+  # Enriches every signal with pod, namespace, node and deployment names by
+  # asking the API server which pod an IP or a log path belongs to. Without it
+  # a log line in Loki carries a filename and nothing else, and correlating a
+  # trace with the pod that produced it is manual.
+  kubernetesAttributes:
+    enabled: true
+
+  # Off deliberately. kube-state-metrics and node-exporter already produce
+  # these, and two sources for the same metric means two series that disagree
+  # at the margins.
+  hostMetrics:
+    enabled: false
+  kubeletMetrics:
+    enabled: false
+  clusterMetrics:
+    enabled: false
+
+ports:
+  otlp:
+    enabled: true
+    containerPort: 4317
+    hostPort: 4317
+    protocol: TCP
+  otlp-http:
+    enabled: true
+    containerPort: 4318
+    hostPort: 4318
+    protocol: TCP
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+  metrics:
+    enabled: false
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 192Mi
+  limits:
+    memory: 384Mi
+
+# Scrapes the collector's own telemetry. An observability component that is not
+# itself observed is the one blind spot that matters most: if it stops
+# forwarding, everything else goes quiet and looks healthy.
+serviceMonitor:
+  enabled: true
+  metricsEndpoints:
+    - port: metrics
+      interval: 30s
+
+config:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+  processors:
+    # First in every pipeline, without exception. Under a burst the collector
+    # will otherwise accumulate batches until the kernel kills it, and a
+    # collector that OOMs loses everything in flight. This makes it shed load
+    # instead, which is the correct failure mode for telemetry.
+    memory_limiter:
+      check_interval: 5s
+      limit_percentage: 80
+      spike_limit_percentage: 20
+
+    # Last before the exporters. Batching is what turns per-span writes into
+    # per-batch writes, and it is the single largest factor in how much load
+    # the backends see.
+    batch:
+      timeout: 5s
+      send_batch_size: 4096
+      send_batch_max_size: 8192
+
+    # A 404 is a correct answer to a request for something that does not exist.
+    # Left as an error it counts against the service's error rate and pollutes
+    # the trace view with red spans that represent normal behaviour.
+    transform/unset_404:
+      error_mode: ignore
+      trace_statements:
+        - context: span
+          statements:
+            - set(status.code, STATUS_CODE_UNSET) where attributes["http.response.status_code"] == 404
+
+  exporters:
+    otlp/tempo:
+      endpoint: tempo.monitoring.svc.cluster.local:4317
+      tls:
+        insecure: true
+      # Retry and queue, because a Tempo restart during a rollout should delay
+      # traces rather than discard them.
+      retry_on_failure:
+        enabled: true
+        initial_interval: 5s
+        max_interval: 30s
+      sending_queue:
+        enabled: true
+        queue_size: 1000
+
+    otlphttp/loki:
+      # Loki 3.x accepts OTLP natively at /otlp, so no format translation and
+      # no Promtail-style label mangling. Resource attributes become stream
+      # labels and everything else becomes structured metadata.
+      endpoint: http://loki.monitoring.svc.cluster.local:3100/otlp
+      tls:
+        insecure: true
+      retry_on_failure:
+        enabled: true
+      sending_queue:
+        enabled: true
+        queue_size: 1000
+
+  extensions:
+    health_check:
+      endpoint: 0.0.0.0:13133
+
+  service:
+    extensions: [health_check]
+
+    pipelines:
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, k8sattributes, transform/unset_404, batch]
+        exporters: [otlp/tempo]
+
+      logs:
+        receivers: [filelog]
+        processors: [memory_limiter, k8sattributes, batch]
+        exporters: [otlphttp/loki]
+
+    # No metrics pipeline. Application metrics are scraped by Prometheus
+    # directly through a ServiceMonitor, which is what the SLO recording rules
+    # and burn-rate alerts are built on. Routing them through here would add a
+    # hop, change the metric names to OTel semantic conventions, and break
+    # every one of those rules for no gain.

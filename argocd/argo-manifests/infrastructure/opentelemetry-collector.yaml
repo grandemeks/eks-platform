@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: opentelemetry-collector
+  namespace: argocd
+  annotations:
+    # Wave 1: Loki and Tempo are its exporter targets and are in the same wave,
+    # but the collector tolerates them being briefly absent — it retries. The
+    # application in wave 2 is what must not start before this exists, because
+    # traces emitted before the collector is up are simply lost.
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: default
+
+  sources:
+    - repoURL: https://open-telemetry.github.io/opentelemetry-helm-charts
+      chart: opentelemetry-collector
+      targetRevision: 0.172.0
+      helm:
+        releaseName: otel-collector
+        valueFiles:
+          - $values/argocd/configs/infrastructure/opentelemetry-collector-values.yaml
+
+    - repoURL: https://github.com/grandemeks/eks-platform.git
+      targetRevision: main
+      ref: values
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
