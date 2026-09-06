@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// Config is populated entirely from the environment. 
+// Config is populated entirely from the environment.
 // Nothing about where this runs is compiled into the binary, so the same image is promoted unchanged
 // from a laptop to the cluster - the twelve-factor rule that makes an image
 // reproducible.
@@ -25,6 +25,15 @@ type Config struct {
 	// Version is stamped in at build time via -ldflags and exported as a
 	// metric label, so a dashboard can show which build served a request.
 	Version string
+
+	// Identifies this service in Tempo and on the service graph. Set from the
+	// environment rather than hardcoded so the same binary can run as a
+	// differently-named service in another environment.
+	ServiceName string
+
+	// Carried as a resource attribute on every span, so traces from dev and
+	// production are distinguishable in a shared backend.
+	Environment string
 }
 
 func LoadConfig() (Config, error) {
@@ -49,7 +58,9 @@ func LoadConfig() (Config, error) {
 		// leaves the VPC.
 		DBSSLMode: env("DB_SSLMODE", "require"),
 
-		Version: env("APP_VERSION", "dev"),
+		Version:     env("APP_VERSION", "dev"),
+		ServiceName: env("OTEL_SERVICE_NAME", "demo-app"),
+		Environment: env("OTEL_DEPLOYMENT_ENVIRONMENT", "dev"),
 	}
 
 	// Fail fast and loudly. A pod that starts without a database configured

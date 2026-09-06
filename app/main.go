@@ -20,8 +20,9 @@ var Version = "dev"
 
 func main() {
 	// JSON to stdout, which is the only thing a container should do with logs.
-	// Promtail picks them up from the node and ships them to Loki; structured
-	// fields mean a query can filter on them instead of matching substrings.
+	// The OTel collector reads them off the node with its filelog receiver and
+	// forwards them to Loki; structured fields survive that trip as queryable
+	// attributes rather than as text to match against.
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
@@ -45,6 +46,17 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
+	// Returns a no-op shutdown when no OTLP endpoint is configured, so the
+	// same binary runs locally without a collector.
+	shutdownTracing, err := initTracing(ctx, cfg)
+	if err != nil {
+		// Not fatal. Losing traces is a degraded state; refusing to start
+		// because the telemetry pipeline is unavailable would make the
+		// observability stack a hard dependency of the thing it observes.
+		log.Warn("tracing disabled", slog.Any("error", err))
+		shutdownTracing = func(context.Context) error { return nil }
+	}
+
 	store, err := NewStore(ctx, cfg.DSN())
 	if err != nil {
 		return err
@@ -52,10 +64,9 @@ func run(log *slog.Logger) error {
 	defer store.Close()
 
 	// Migration is allowed to fail without taking the process down: the pod
-	// comes up, reports itself unready, and recovers on its own once the
-	// database is reachable. Exiting here would produce a CrashLoopBackOff
-	// with its exponential backoff, which turns a thirty-second database blip
-	// into several minutes of downtime.
+	// comes up, reports unready, and recovers on its own once the database is
+	// reachable. Exiting here would produce CrashLoopBackOff with exponential
+	// backoff, turning a thirty-second database blip into minutes of downtime.
 	migrateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	if err := store.Migrate(migrateCtx); err != nil {
 		log.Warn("schema migration failed, continuing in unready state", slog.Any("error", err))
@@ -84,6 +95,8 @@ func run(log *slog.Logger) error {
 		log.Info("server listening",
 			slog.String("addr", httpServer.Addr),
 			slog.String("version", cfg.Version),
+			slog.String("service", cfg.ServiceName),
+			slog.Bool("tracing", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != ""),
 		)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
@@ -121,6 +134,17 @@ func run(log *slog.Logger) error {
 
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		return err
+	}
+
+	// Flushed after the server has drained, so spans from the last requests
+	// are exported rather than discarded with the batch queue. A process that
+	// exits without this loses whatever the batcher had not yet sent — which
+	// is precisely the spans from a shutdown, the ones worth having.
+	log.Info("flushing traces")
+	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer flushCancel()
+	if err := shutdownTracing(flushCtx); err != nil {
+		log.Warn("trace flush failed", slog.Any("error", err))
 	}
 
 	log.Info("shutdown complete")

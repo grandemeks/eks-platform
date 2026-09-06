@@ -47,3 +47,25 @@ prometheusRule:
 
 dashboard:
   enabled: true
+
+
+extraEnv:
+  # The collector runs as a DaemonSet with hostPort, so the pod reaches the one
+  # on its own node rather than crossing to another. That keeps the export hop
+  # local, and it means a node losing its collector affects only the pods on
+  # that node instead of the whole cluster losing traces.
+  - name: OTEL_COLLECTOR_HOST
+    valueFrom:
+      fieldRef:
+        fieldPath: status.hostIP
+
+  - name: OTEL_EXPORTER_OTLP_ENDPOINT
+    value: "http://$(OTEL_COLLECTOR_HOST):4318"
+
+  # Becomes service.name on every span. This is what Tempo groups by and what
+  # the nodes on the service graph are named after.
+  - name: OTEL_SERVICE_NAME
+    value: demo-app
+
+  - name: OTEL_DEPLOYMENT_ENVIRONMENT
+    value: dev

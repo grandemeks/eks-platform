@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/attribute"
 )
 
 type Store struct {
@@ -90,6 +91,16 @@ type VisitResult struct {
 // coalesce covers the first-ever visit, when the totals CTE finds no rows and
 // min(created_at) is NULL.
 func (s *Store) RecordVisit(ctx context.Context, source string) (VisitResult, error) {
+	// A child span around the query. Without it the trace shows one span for
+	// the whole request and the database time is invisible — the trace can say
+	// the request took 400ms but not that 380ms of it was waiting on Postgres.
+	//
+	// A production service would instrument the driver instead, so every query
+	// is covered rather than the ones someone remembered to wrap. That is one
+	// more dependency for one query here.
+	ctx, span := tracer.Start(ctx, "db.record_visit")
+	defer span.End()
+
 	const query = `
 		WITH inserted AS (
 			INSERT INTO visits (source) VALUES ($1) RETURNING created_at
@@ -101,10 +112,21 @@ func (s *Store) RecordVisit(ctx context.Context, source string) (VisitResult, er
 		FROM totals, inserted;
 	`
 
+	span.SetAttributes(
+		attribute.String("db.system", "postgresql"),
+		attribute.String("db.operation", "INSERT"),
+		attribute.String("db.sql.table", "visits"),
+	)
+
 	var r VisitResult
-	err := s.pool.QueryRow(ctx, query, source).Scan(&r.Total, &r.First)
-	if err != nil {
+	if err := s.pool.QueryRow(ctx, query, source).Scan(&r.Total, &r.First); err != nil {
+		// Marks the span as failed so it is red in Tempo and counted as an
+		// error by the metrics generator's RED metrics. A span that returns an
+		// error without recording it looks successful in every view.
+		span.RecordError(err)
 		return VisitResult{}, fmt.Errorf("record visit: %w", err)
 	}
+
+	span.SetAttributes(attribute.Int64("db.rows_total", r.Total))
 	return r, nil
 }
