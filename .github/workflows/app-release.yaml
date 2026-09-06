@@ -99,7 +99,7 @@ jobs:
       # That is the point: a near-empty result here is evidence the base image
       # choice was correct, and any finding is genuinely ours.
       - name: Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: image
           image-ref: ${{ env.ECR_REGISTRY }}/${{ env.ECR_REPOSITORY }}:${{ steps.meta.outputs.tag }}
