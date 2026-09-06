@@ -24,7 +24,7 @@ externalSecret:
   # Full ARN, not the name. Secrets Manager appends a random six-character
   # suffix to the ARN that is not part of the secret's name, so deriving one
   # from the other produces a value that does not resolve.
-  remoteSecretName: "arn:aws:secretsmanager:eu-central-1:385291933614:secret:rds!db-cbf47923-22a1-42c4-aefb-4862a0f168f8-gCEJSv"
+  remoteSecretName: "arn:aws:secretsmanager:eu-central-1:385291933614:secret:rds!db-dedf5654-aa85-40a3-8b1d-e1fb70007c73-id4ULM"
   roleArn: "arn:aws:iam::385291933614:role/eks-platform-dev-demo-app-secrets"
 
 ingress:
