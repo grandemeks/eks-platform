@@ -59,9 +59,22 @@ variable "cluster_public_access_cidrs" {
 }
 
 variable "cluster_admin_principal_arns" {
-  description = "IAM principals granted cluster-admin on the cluster."
+  description = <<-EOT
+    Extra IAM principals granted cluster-admin, beyond whoever runs the apply.
+
+    The default is not empty on purpose. This value used to live only in
+    terraform.tfvars, which is gitignored, so a local apply saw a populated list
+    and a CI apply saw an empty one. Terraform behaved correctly in both cases
+    and removed the access entry it could not see in configuration — which meant
+    a CI apply silently revoked the operator's own access to the cluster, and
+    the failure only surfaced later as an unexplained Unauthorized.
+
+    An IAM ARN is not a secret. Keeping it in code instead of in an ignored file
+    is what makes the two environments behave identically, which is the whole
+    claim the repository makes about itself.
+  EOT
   type        = list(string)
-  default     = []
+  default     = ["arn:aws:iam::385291933614:user/milos-admin"]
 }
 
 variable "argocd_chart_version" {
