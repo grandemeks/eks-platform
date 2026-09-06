@@ -13,7 +13,7 @@ image:
   digest: "sha256:608a9552880f5b21f90ad05ea0bb8c92156b057f272709ff2682ba666de5c512"
 
 database:
-  host: eks-platform-dev.cty0csq288gi.eu-central-1.rds.amazonaws.com
+  host: "eks-platform-dev.cty0csq288gi.eu-central-1.rds.amazonaws.com"
   port: 5432
   name: demo
   sslMode: require
@@ -24,7 +24,7 @@ externalSecret:
   # Full ARN, not the name. Secrets Manager appends a random six-character
   # suffix to the ARN that is not part of the secret's name, so deriving one
   # from the other produces a value that does not resolve.
-  remoteSecretName: "arn:aws:secretsmanager:eu-central-1:385291933614:secret:rds!db-3db5ad8c-e279-49a2-922d-653e7edb02de-xzJ2hO"
+  remoteSecretName: "arn:aws:secretsmanager:eu-central-1:385291933614:secret:rds!db-0ab18c52-aeb7-42d6-8771-ea11e9183208-vkKXlx"
   roleArn: "arn:aws:iam::385291933614:role/eks-platform-dev-demo-app-secrets"
 
 ingress:
