@@ -9,7 +9,7 @@ serviceAccount:
     eks.amazonaws.com/role-arn: arn:aws:iam::385291933614:role/eks-platform-dev-aws-load-balancer-controller
 
 region: eu-central-1
-vpcId: vpc-0b3d0824d4d30a78c
+vpcId: vpc-035e341bc4d3680c5
 
 # Two replicas so a node drain does not stop Ingress reconciliation.
 replicaCount: 2
