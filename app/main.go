@@ -49,6 +49,7 @@ func run(log *slog.Logger) error {
 	// Returns a no-op shutdown when no OTLP endpoint is configured, so the
 	// same binary runs locally without a collector.
 	shutdownTracing, err := initTracing(ctx, cfg)
+	tracingEnabled := err == nil && os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != ""
 	if err != nil {
 		// Not fatal. Losing traces is a degraded state; refusing to start
 		// because the telemetry pipeline is unavailable would make the
@@ -96,7 +97,7 @@ func run(log *slog.Logger) error {
 			slog.String("addr", httpServer.Addr),
 			slog.String("version", cfg.Version),
 			slog.String("service", cfg.ServiceName),
-			slog.Bool("tracing", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != ""),
+			slog.Bool("tracing", tracingEnabled),
 		)
 		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err

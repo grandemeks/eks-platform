@@ -12,7 +12,6 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -28,29 +27,33 @@ func initTracing(ctx context.Context, cfg Config) (func(context.Context) error, 
 		return func(context.Context) error { return nil }, nil
 	}
 
-	// Resource attributes describe the producer of every span, and are set
-	// once rather than repeated per span. service.name is what Tempo groups by
-	// and what the service graph nodes are named after; getting it wrong makes
-	// the traces arrive but unattributable.
+	// Attributes written as literal keys rather than through semconv helpers.
+	//
+	// resource.Default() carries the schema URL of the SDK version, and the
+	// semconv package carries its own. resource.Merge refuses to combine two
+	// resources with different schema URLs, so importing a semconv package
+	// that does not exactly match the SDK produces a merge error at startup —
+	// which is how this first surfaced, as tracing silently disabled with the
+	// application otherwise healthy.
+	//
+	// Passing an empty schema URL sidesteps the version coupling entirely. The
+	// attribute keys below are the ones Tempo groups by and the ones the
+	// Grafana datasource configuration matches on; those names are stable
+	// across convention versions even when the generated helpers are renamed.
 	res, err := resource.Merge(
 		resource.Default(),
-		resource.NewWithAttributes(
-			semconv.SchemaURL,
-			semconv.ServiceName(cfg.ServiceName),
-			semconv.ServiceVersion(cfg.Version),
-			// Written as a raw attribute rather than through a semconv helper.
-			// The convention renamed this key from deployment.environment to
-			// deployment.environment.name, so the generated helper exists
-			// under one name in older packages and another in newer ones.
-			// Spelling it out means the code does not break on a semconv bump,
-			// and the key stays the one Grafana's datasource configuration and
-			// the Tempo service graph are already matching on.
+		resource.NewWithAttributes("",
+			attribute.String("service.name", cfg.ServiceName),
+			attribute.String("service.version", cfg.Version),
 			attribute.String("deployment.environment", cfg.Environment),
 			// The pod name. When a trace shows one slow replica out of two,
 			// this is the attribute that says which one.
-			semconv.K8SPodName(hostname()),
+			attribute.String("k8s.pod.name", hostname()),
 		),
 	)
+	if err != nil {
+		return nil, fmt.Errorf("build resource: %w", err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("build resource: %w", err)
 	}
