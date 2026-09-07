@@ -232,16 +232,19 @@
         {
           "expr": "histogram_quantile(0.50, sum(rate(http_request_duration_seconds_bucket{job=\"demo-app\"}[5m])) by (le))",
           "legendFormat": "p50",
+          "exemplar": true,
           "refId": "A"
         },
         {
           "expr": "histogram_quantile(0.90, sum(rate(http_request_duration_seconds_bucket{job=\"demo-app\"}[5m])) by (le))",
           "legendFormat": "p90",
+          "exemplar": true,
           "refId": "B"
         },
         {
           "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket{job=\"demo-app\"}[5m])) by (le))",
           "legendFormat": "p99",
+          "exemplar": true,
           "refId": "C"
         },
         {
@@ -351,6 +354,7 @@
         {
           "expr": "histogram_quantile(0.99, sum(rate(app_database_query_duration_seconds_bucket{job=\"demo-app\"}[5m])) by (le))",
           "legendFormat": "p99",
+          "exemplar": true,
           "refId": "A"
         }
       ],

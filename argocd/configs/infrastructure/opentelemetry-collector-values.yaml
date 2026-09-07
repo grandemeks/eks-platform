@@ -64,8 +64,11 @@ ports:
     enabled: false
   zipkin:
     enabled: false
+  # The collector's own telemetry endpoint (8888). Required for the PodMonitor
+  # below: with it disabled the port exists on no container and nothing can be
+  # scraped.
   metrics:
-    enabled: false
+    enabled: true
 
 resources:
   requests:
@@ -77,7 +80,21 @@ resources:
 # Scrapes the collector's own telemetry. An observability component that is not
 # itself observed is the one blind spot that matters most: if it stops
 # forwarding, everything else goes quiet and looks healthy.
-serviceMonitor:
+#
+# A PodMonitor rather than a ServiceMonitor, for two reasons. The chart only
+# renders a ServiceMonitor when it also renders a Service, and in daemonset
+# mode it renders neither unless service.enabled is set explicitly — so
+# serviceMonitor.enabled on its own is accepted and silently does nothing,
+# which is exactly the blind spot the comment above is about. And a Service in
+# front of a DaemonSet would scrape one arbitrary collector per interval
+# instead of all of them, so a single node's collector could be failing
+# unnoticed.
+#
+# otelcol_receiver_accepted_spans and otelcol_exporter_send_failed_spans are
+# the two series worth watching here: a pipeline that receives nothing and one
+# that fails to forward everything are different problems with the same
+# symptom, and neither is visible from the application side.
+podMonitor:
   enabled: true
   metricsEndpoints:
     - port: metrics
@@ -166,8 +183,18 @@ config:
         processors: [memory_limiter, k8sattributes, batch]
         exporters: [otlphttp/loki]
 
-    # No metrics pipeline. Application metrics are scraped by Prometheus
-    # directly through a ServiceMonitor, which is what the SLO recording rules
-    # and burn-rate alerts are built on. Routing them through here would add a
-    # hop, change the metric names to OTel semantic conventions, and break
-    # every one of those rules for no gain.
+      # No metrics pipeline. Application metrics are scraped by Prometheus
+      # directly through a ServiceMonitor, which is what the SLO recording
+      # rules and burn-rate alerts are built on. Routing them through here
+      # would add a hop, change the metric names to OTel semantic conventions,
+      # and break every one of those rules for no gain.
+      #
+      # Explicitly null, not merely absent. The chart deep-merges this map over
+      # its own base config, and a YAML merge cannot remove a key by omitting
+      # it — so leaving this out kept the chart's default metrics pipeline
+      # alive, scraping the collector through a prometheus receiver and writing
+      # every data point to the debug exporter. That is a batch of metrics
+      # printed to stdout every ten seconds, collected by the filelog receiver
+      # two lines below, and shipped to Loki: the collector's loudest log
+      # stream was its own telemetry describing itself.
+      metrics: null

@@ -138,6 +138,22 @@ grafana:
     datasources:
       enabled: true
 
+      # The metric-to-trace direction of correlation, and the one that is
+      # easiest to leave half-finished: the application attaches exemplars,
+      # Prometheus stores them, Grafana draws them as dots on the latency
+      # panel — and clicking one does nothing, because Grafana does not know
+      # which datasource the trace_id belongs to. This is what turns the dot
+      # into a link into Tempo.
+      #
+      # Applies to the Prometheus datasource the chart creates itself, which is
+      # why it is set here rather than under additionalDataSources.
+      exemplarTraceIdDestinations:
+        datasourceUid: tempo
+        # Must match the exemplar label the application emits, which is
+        # trace_id — not Grafana's default of traceID.
+        traceIdLabelName: trace_id
+        urlDisplayLabel: View trace
+
   grafana.ini:
     server:
       root_url: https://grafana.incode-demo.grandemeks.tech
@@ -176,10 +192,21 @@ grafana:
       jsonData:
         # Turns a trace_id in a log line into a link that opens the trace.
         # This is the log-to-trace direction of correlation.
+        #
+        # A regex over the log line, not matcherType: label. The label variant
+        # only matches stream labels and structured metadata, and trace_id is
+        # neither: the filelog receiver ships each container line as an opaque
+        # string after CRI parsing, so the application's JSON stays inside the
+        # body and never becomes an attribute. Loki confirms it — no trace_id
+        # label exists in the store — so the link matched nothing and rendered
+        # nowhere.
+        #
+        # Capture group 1 is the value. 32 hex characters is a W3C trace ID,
+        # which keeps this from matching a truncated or empty field.
         derivedFields:
           - name: TraceID
-            matcherType: label
-            matcherRegex: trace_id
+            matcherType: regex
+            matcherRegex: '"trace_id":"([a-f0-9]{32})"'
             url: "$${__value.raw}"
             datasourceUid: tempo
 
@@ -187,7 +214,11 @@ grafana:
       type: tempo
       uid: tempo
       access: proxy
-      url: http://tempo.monitoring.svc.cluster.local:3100
+      # 3200, not 3100. Tempo serves its query API on 3200; 3100 is Loki's
+      # port and is not open on the Tempo service at all, so this datasource
+      # answered every query with a connection error — including the ones
+      # arriving from an exemplar link or a log line's derived field.
+      url: http://tempo.monitoring.svc.cluster.local:3200
       jsonData:
         # Trace to logs: from a span, jump to the logs that pod emitted in the
         # same window, already filtered to the right namespace and pod.

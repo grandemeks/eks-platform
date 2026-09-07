@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"net/url"
 	"os"
+	"path"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -26,6 +29,18 @@ func initTracing(ctx context.Context, cfg Config) (func(context.Context) error, 
 	if endpoint == "" {
 		return func(context.Context) error { return nil }, nil
 	}
+
+	// The SDK reports asynchronous failures — a rejected export, a dropped
+	// batch — through the global error handler, and the default one writes to
+	// the standard log package. slog.SetDefault redirects that to the JSON
+	// handler at INFO, so an export failing on every batch appears as an
+	// unlabelled info line indistinguishable from ordinary application output.
+	// That is how a completely dead trace pipeline reads as healthy. Route it
+	// through slog at ERROR with a stable message instead, so it is greppable
+	// in Loki and can be alerted on.
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		slog.Error("otel sdk error", slog.Any("error", err))
+	}))
 
 	// Attributes written as literal keys rather than through semconv helpers.
 	//
@@ -54,21 +69,43 @@ func initTracing(ctx context.Context, cfg Config) (func(context.Context) error, 
 	if err != nil {
 		return nil, fmt.Errorf("build resource: %w", err)
 	}
+
+	// OTEL_EXPORTER_OTLP_ENDPOINT is a base URL by specification: the exporter
+	// is expected to append the per-signal path, so http://host:4318 means
+	// http://host:4318/v1/traces. WithEndpointURL does not do that — it takes
+	// the URL as the complete traces endpoint and, given no path, sets it to
+	// "/" explicitly so the default signal path is not filled in later. The
+	// collector serves only /v1/traces, /v1/metrics and /v1/logs, so every
+	// export was answered with a 404 and no span ever reached Tempo. Nothing
+	// failed loudly: the application stayed healthy, trace IDs were generated
+	// and returned to callers, and exemplars carried IDs that resolved to
+	// nothing.
+	//
+	// So parse the base URL and append the signal path here.
+	base, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("build resource: %w", err)
+		return nil, fmt.Errorf("parse OTLP endpoint %q: %w", endpoint, err)
+	}
+	if base.Host == "" {
+		return nil, fmt.Errorf("OTLP endpoint %q has no host", endpoint)
 	}
 
 	// HTTP rather than gRPC. Both are supported by the collector; HTTP keeps
 	// the dependency tree considerably smaller, and at this volume the
 	// difference in efficiency is not measurable.
-	exporter, err := otlptracehttp.New(ctx,
-		otlptracehttp.WithEndpointURL(endpoint),
-		// Plaintext. The collector runs on the same node, reached over the
-		// pod network, and never leaves the VPC. TLS here would mean managing
-		// a certificate for a hop that does not cross a trust boundary.
-		otlptracehttp.WithInsecure(),
-		otlptracehttp.WithTimeout(10*time.Second),
-	)
+	exporterOpts := []otlptracehttp.Option{
+		otlptracehttp.WithEndpoint(base.Host),
+		otlptracehttp.WithURLPath(path.Join(base.Path, "/v1/traces")),
+		otlptracehttp.WithTimeout(10 * time.Second),
+	}
+	if base.Scheme != "https" {
+		// Plaintext. The collector runs on the same node, reached over the pod
+		// network, and never leaves the VPC. TLS here would mean managing a
+		// certificate for a hop that does not cross a trust boundary.
+		exporterOpts = append(exporterOpts, otlptracehttp.WithInsecure())
+	}
+
+	exporter, err := otlptracehttp.New(ctx, exporterOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("create OTLP exporter: %w", err)
 	}
