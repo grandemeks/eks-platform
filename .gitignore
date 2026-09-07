@@ -48,6 +48,3 @@ vendor/
 .vscode/*
 !.vscode/settings.json
 *.swp
-
-# Docs
-/docs/decisions.md
