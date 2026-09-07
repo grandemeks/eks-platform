@@ -14,7 +14,7 @@ on:
       - 'helm-charts/**'
       - 'argocd/configs/**'
       - 'app/**'
-      - '.github/workflows/pr-checks.yml'
+      - '.github/workflows/pr-checks.yaml'
 
 permissions:
   contents: read

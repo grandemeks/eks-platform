@@ -5,10 +5,15 @@ name: environment
 #   push to main touching terraform/**   apply the reviewed change
 #   manual dispatch                      bring the environment up or down
 #
-# There is deliberately no pull_request trigger. Plans run in pr-checks.yml,
-# which has no apply path. Keeping them in separate files means the separation
-# is structural: a mistake in an `if:` expression cannot cause a pull request
-# to apply infrastructure, because the trigger does not exist here at all.
+# There is deliberately no pull_request trigger. Plans run in pr-checks.yaml,
+# which has no apply path, so a mistake in an `if:` expression here cannot let
+# a pull request reach an apply — the trigger does not exist in this file.
+#
+# That is a guard rail, not a boundary. For pull_request events GitHub runs the
+# workflow file from the head branch, and the CI role's trust policy accepts
+# pull_request, so a pull request could still add a step that assumes the role
+# directly. Branch protection and the required reviewer on the job below are
+# what actually stop that.
 #
 # The manual dispatch exists because the brief asks for the cluster to be torn
 # down when nobody is working on it. A note in the README asking someone to
@@ -21,7 +26,7 @@ on:
     branches: [main]
     paths:
       - 'terraform/**'
-      - '.github/workflows/environment.yml'
+      - '.github/workflows/environment.yaml'
 
   workflow_dispatch:
     inputs:

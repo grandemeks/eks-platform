@@ -104,6 +104,7 @@ spec:
             description: >-
               Not urgent enough to page, but the budget will not survive the
               month if this continues. Investigate during working hours.
+            runbook_url: https://github.com/grandemeks/eks-platform/blob/main/docs/runbook.md#error-budget-burn
 
         - alert: DemoAppErrorBudgetBurnVerySlow
           expr: |
@@ -120,6 +121,7 @@ spec:
               The exact case a simple threshold alert never catches: an error
               rate low enough to look like noise, sustained long enough to
               exhaust the budget.
+            runbook_url: https://github.com/grandemeks/eks-platform/blob/main/docs/runbook.md#error-budget-burn
 
     # -------------------------------------------------------------------------
     # Symptom alerts
@@ -141,6 +143,7 @@ spec:
             description: >-
               Readiness fails while this holds, so the pod is out of the load
               balancer. If every replica is affected the service is down.
+            runbook_url: https://github.com/grandemeks/eks-platform/blob/main/docs/runbook.md#database-unreachable
 
         - alert: DemoAppLatencyObjectiveViolated
           expr: |
@@ -151,6 +154,7 @@ spec:
             service: demo-app
           annotations:
             summary: "More than {{ .Values.slo.latencyErrorBudget }} of requests exceed {{ .Values.slo.latencyObjectiveSeconds }}s"
+            runbook_url: https://github.com/grandemeks/eks-platform/blob/main/docs/runbook.md#latency-objective-violated
 
         - alert: DemoAppNoTraffic
           # absent() fires when the series does not exist at all, which is what
@@ -167,4 +171,5 @@ spec:
             description: >-
               Either every replica is gone or the ServiceMonitor has stopped
               matching. Both look identical from here, and both are urgent.
+            runbook_url: https://github.com/grandemeks/eks-platform/blob/main/docs/runbook.md#no-traffic
 {{- end }}

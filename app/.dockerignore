@@ -7,3 +7,8 @@ Dockerfile
 bin/
 dist/
 *.test
+
+# The compiled binary, if someone has run `go build` in here. The image is
+# built from source inside the Dockerfile; shipping a host-built arm64
+# executable into the context is pure upload cost at best.
+app

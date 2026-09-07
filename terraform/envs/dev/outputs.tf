@@ -63,6 +63,21 @@ output "irsa_external_dns_role_arn" {
   value = module.irsa_external_dns.role_arn
 }
 
+output "irsa_grafana_secrets_role_arn" {
+  description = "Annotate the monitoring namespace secret-reader service account with this."
+  value       = module.irsa_grafana_secrets.role_arn
+}
+
+output "grafana_admin_secret_name" {
+  description = <<-EOT
+    Name of the Secrets Manager secret holding Grafana's admin credential.
+    Referenced by name rather than ARN because this secret is created here, so
+    the name is stable across a destroy/apply — unlike the RDS-managed secret,
+    whose ARN carries a random suffix and has to be re-synced after a rebuild.
+  EOT
+  value       = aws_secretsmanager_secret.grafana_admin.name
+}
+
 output "dns_zone_id" {
   value = data.aws_route53_zone.demo.zone_id
 }

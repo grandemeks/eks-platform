@@ -24,6 +24,36 @@ policy: sync
 # it created. Another tool, or a hand-made record, is left alone.
 txtOwnerId: eks-platform-dev
 
+# The ownership record for the application's hostname has to live inside the
+# delegated zone, and by default it does not.
+#
+# The TXT registry names its ownership record by prefixing the record type onto
+# the first label: grafana.incode-demo.grandemeks.tech becomes
+# cname-grafana.incode-demo.grandemeks.tech, which is inside the zone and works.
+# But the application sits on the zone apex, so incode-demo.grandemeks.tech
+# becomes cname-incode-demo.grandemeks.tech — a sibling under grandemeks.tech,
+# which is registrar-hosted and not delegated here. domainFilters drops it.
+#
+# The consequence is not a visible error. external-dns creates the A and AAAA
+# records for the apex quite happily, silently skips the ownership TXT, and from
+# then on does not recognise the records as its own. It will never correct them.
+# So after a destroy/apply the apex keeps pointing at the previous ALB, which no
+# longer exists, and the hostname stops resolving — while the logs say "All
+# records are already up to date" every minute.
+#
+# Ending the prefix in a period turns the ownership record into a subdomain
+# instead of a sibling: a-.incode-demo.grandemeks.tech. That is inside the zone
+# for the apex and for every subdomain, so one setting covers both. This is the
+# form the external-dns TXT registry documentation prescribes for apex records —
+# the %{record_type} substitution is required, since one name can carry both an
+# A and an AAAA record and they need distinct ownership records.
+#
+# Not changeable in place: external-dns looks for ownership under the new name
+# only, so records registered under the old prefix are orphaned and become
+# unowned. Changing this requires deleting the old TXT records and the A/AAAA
+# records they described, so external-dns recreates both together.
+txtPrefix: "%{record_type}-."
+
 sources:
   - ingress
 

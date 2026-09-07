@@ -70,10 +70,6 @@ serviceMonitor:
 # Extra environment variables, appended to the ones the chart always sets.
 extraEnv: []
 
-# ---------------------------------------------------------------------------
-# APPEND these blocks to helm-charts/demo-app/values.yaml
-# ---------------------------------------------------------------------------
-
 # Service level objectives, expressed as values rather than baked into the
 # alert expressions. Changing the target is a values change, and the same
 # chart can carry a stricter objective in production than in dev.

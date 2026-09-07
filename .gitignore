@@ -41,6 +41,10 @@ dist/
 *.test
 *.out
 vendor/
+# The compiled binary. `go build` in app/ writes ./app, which is a 29 MB
+# executable that was tracked for a while: it went into every Docker build
+# context and got scanned by Trivy as part of the source tree.
+/app/app
 
 # Junk
 .DS_Store

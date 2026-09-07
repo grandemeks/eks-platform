@@ -31,7 +31,7 @@ resource "kubernetes_storage_class_v1" "gp3" {
   # Lets a PVC be resized in place instead of requiring a migration.
   allow_volume_expansion = true
 
-   parameters = {
+  parameters = {
     type      = "gp3"
     encrypted = "true"
     kmsKeyId  = var.kms_key_arn

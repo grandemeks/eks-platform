@@ -42,6 +42,7 @@ VPC_ID="$(tf_output "$ENV_DIR" vpc_id)"
 ROLE_SECRETS="$(tf_output "$ENV_DIR" irsa_demo_app_secrets_role_arn)"
 ROLE_LBC="$(tf_output "$ENV_DIR" irsa_aws_load_balancer_controller_role_arn)"
 ROLE_DNS="$(tf_output "$ENV_DIR" irsa_external_dns_role_arn)"
+ROLE_GRAFANA="$(tf_output "$ENV_DIR" irsa_grafana_secrets_role_arn)"
 CERT_ARN="$(tf_output "$BOOTSTRAP_DIR" acm_certificate_arn)"
 
 # The endpoint output is host:port; the chart keeps them as separate values so
@@ -56,6 +57,7 @@ for pair in "database_endpoint=$DB_ENDPOINT" \
             "irsa_demo_app_secrets=$ROLE_SECRETS" \
             "irsa_lbc=$ROLE_LBC" \
             "irsa_external_dns=$ROLE_DNS" \
+            "irsa_grafana_secrets=$ROLE_GRAFANA" \
             "acm_certificate_arn=$CERT_ARN"; do
   name="${pair%%=*}"; value="${pair#*=}"
   if [ -z "$value" ]; then
@@ -117,6 +119,10 @@ set_yaml_value "$DNS_VALUES" serviceAccount eks.amazonaws.com/role-arn "$ROLE_DN
 
 log "Updating $(basename "$GRAFANA_VALUES")"
 set_yaml_value "$GRAFANA_VALUES" grafana alb.ingress.kubernetes.io/certificate-arn "$CERT_ARN" no
+# The service account External Secrets impersonates to read Grafana's admin
+# credential. The secret it reads is referenced by name, not ARN, so unlike the
+# database credential there is nothing else here to sync.
+set_yaml_value "$GRAFANA_VALUES" grafana eks.amazonaws.com/role-arn "$ROLE_GRAFANA" no
 
 log "Verifying the files still parse"
 python3 - "$DEMO_VALUES" "$LBC_VALUES" "$DNS_VALUES" "$GRAFANA_VALUES" <<'PYEOF'

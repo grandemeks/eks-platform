@@ -36,9 +36,9 @@ ingress:
   certificateArn: "arn:aws:acm:eu-central-1:385291933614:certificate/19d20204-58a8-4fb6-b70c-049295d1a4bb"
   group: eks-platform-dev
 
-# ---------------------------------------------------------------------------
-# APPEND / MERGE into argocd/configs/demo-app/values-dev.yaml
-# ---------------------------------------------------------------------------
+# Observability is switched on per environment rather than in the chart
+# defaults, so a bare `helm install` of this chart stays self-contained and
+# does not fail on CRDs the target cluster may not have.
 serviceMonitor:
   enabled: true
 

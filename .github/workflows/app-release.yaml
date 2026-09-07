@@ -12,7 +12,7 @@ on:
     branches: [main]
     paths:
       - 'app/**'
-      - '.github/workflows/app-release.yml'
+      - '.github/workflows/app-release.yaml'
   workflow_dispatch:
 
 permissions:

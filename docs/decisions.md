@@ -1,167 +1,123 @@
 # Decisions
 
-Design decisions for the eks-platform reference environment: what was chosen, what was considered instead, and why. This is the presentation version — see the interview walkthrough for live-demo talking points.
+Talking points for walking through this platform. One line per decision, with the alternative that was rejected. The reasoning in depth is in the code comments — every non-obvious line says why it is there.
 
-## Terraform: two stacks, not one
+---
 
-`terraform/bootstrap` holds what must survive a teardown: state bucket, KMS key, DNS zone, ECR repository, ACM certificate, GitHub OIDC roles. `terraform/envs/dev` holds what gets destroyed nightly: VPC, EKS, RDS. Separate state files in one S3 bucket — a `destroy` in one can never reach the other.
+## The 30-second version
 
-**Cost of the persistent layer:** ~$1.50/month.
+Terraform provisions AWS in two stacks. Argo CD owns everything inside the cluster. CI builds, scans, signs and commits — it holds no cluster credentials, so its worst case is one bad image in one ECR repository. Three observability signals are wired to each other in both directions, so a burn-rate alert leads to a trace and that trace leads to the logs.
 
-## State: S3 with native locking
+## Suggested demo path
 
-Terraform 1.11+ locks via the state object itself (`use_lockfile = true`), removing the DynamoDB table every older guide prescribes.
+1. `https://incode-demo.grandemeks.tech` — response carries `hostname` and `trace_id`.
+2. Grafana dashboard → latency panel → click an exemplar dot → the trace of that exact request opens in Tempo.
+3. In the trace → "Logs for this span" → the pod's log lines in that window.
+4. `kubectl -n argocd get applications` — nine Applications, three sync waves.
+5. Make a live change: edit a value in Git, push, watch Argo reconcile.
 
-**`prevent_destroy` on the state bucket.** Everything else is reproducible from code; state history is not.
+---
 
-## Network: `/20` subnets, mapped by AZ
+## Architecture
 
-The AWS VPC CNI gives every *pod* a real VPC IP, so pods consume subnet space — a `/24` runs out around the third deployment. Subnets are `for_each` maps keyed by AZ name, not a list with `count`: a list reorders on any AZ change and Terraform destroys and recreates the subnet — and everything inside it.
+- **Two Terraform stacks, not one.** `bootstrap` holds what must survive a teardown (state, KMS key, DNS zone, ECR with its images, ACM cert). `envs/dev` is destroyed between sessions. Separate state files mean a `destroy` in one cannot reach the other. Persistent layer costs about $1.50/month. Coupled only by a KMS **alias lookup** — no remote state reference, no outputs passed by hand.
+- **S3 state with native locking** (`use_lockfile`), not the DynamoDB table. One less resource for the same guarantee. `prevent_destroy` on the bucket: everything else is reproducible from code, state history is not.
+- **Hand-written EKS module, not the community module.** The brief asks me to explain every part; a 3000-line module I did not write is the opposite of that. In a real team I would use the community module — this choice is about the interview, and I would say so.
 
-**One NAT gateway, not one per AZ** (`single_nat_gateway` flag). Stated cost decision: ~$0.045/h + $0.045/GB. Alternatives considered: `fck-nat` on `t4g.nano` (~10x cheaper, AMI becomes your responsibility), VPC interface endpoints with no NAT at all (best security, traffic never leaves AWS, but five endpoints cost the same as the NAT over a short run).
+## Network
 
-**Subnet tags `kubernetes.io/role/elb` / `internal-elb`.** The AWS Load Balancer Controller discovers subnets by these tags. Without them, an Ingress hangs in `pending` with no useful error.
+- **`/20` subnets keyed by AZ**, so a subnet's identity is stable when the AZ list changes.
+- **One NAT gateway, not one per AZ.** ~$0.045/h + $0.045/GB. Alternatives: `fck-nat` on `t4g.nano` (~10x cheaper, AMI becomes my problem), or VPC interface endpoints and no NAT at all (best security — traffic never leaves AWS — but five endpoints cost about the same over a short run).
+- **Subnet tags `kubernetes.io/role/elb`.** The load balancer controller discovers subnets by tag. Without them an Ingress hangs in `pending` with no useful error.
 
-## EKS: hand-written, not the community module
+## EKS
 
-3000+ lines of a module I didn't write works against the brief's requirement to explain and modify every part of the code live. Hand-written is ~200 lines I can defend line by line.
+- **Kubernetes 1.35** — one minor behind newest; inside standard support without chasing the edge.
+- **`authentication_mode = "API"`**, not the legacy `aws-auth` ConfigMap — a well-known way to lock yourself out with no recovery short of AWS support.
+- **`bootstrap_cluster_creator_admin_permissions = false`.** With `true`, cluster-admin goes to whoever ran the first apply — implicit, and different on a laptop than in CI. Every admin is an explicit access entry, merged from a variable **and** the identity running the apply, so a CI apply cannot lock itself out of the cluster it just created.
+- **Prefix delegation on the VPC CNI** raises pods-per-node from 35 to 110.
+- **`t3.large` x 2, on-demand.** The observability stack alone wants ~4.5 GB. Spot saves ~70% but a reclaimed node mid-interview is not worth it.
+- **KMS envelope encryption** for etcd secrets, using the same platform CMK.
 
-**Kubernetes 1.35** — one minor behind newest, inside standard support without chasing the edge.
+## RDS
 
-**`authentication_mode = "API"`**, not the legacy `aws-auth` ConfigMap — a notorious way to lock yourself out of your own cluster with no recovery short of AWS support. Access is now real, Terraform-managed AWS resources.
+- **`manage_master_user_password = true`.** RDS generates and rotates the credential in Secrets Manager; Terraform never sees it, so it cannot leak through state or a CI log. Trade-off: the secret ARN changes on every rebuild, which is why `scripts/sync-values.sh` exists.
+- **`rds.force_ssl = 1`** in the parameter group. Without it, `sslmode=require` on the client is a promise the server never checks.
+- **Security group references the EKS cluster SG**, not a CIDR. Under the VPC CNI pods share the node's ENI and its security groups, so this is what actually grants pod-to-database access — and it stays correct when subnets change.
 
-**`bootstrap_cluster_creator_admin_permissions = false`.** With `true`, cluster-admin goes to whoever ran the first apply — implicit, and different between a laptop and CI. Every administrator is an explicit `aws_eks_access_entry`, merged from a variable **and** the identity currently running the apply (`data.aws_iam_session_context`), so a CI apply can never lock itself out of the cluster it just created.
+## IRSA
 
-**Prefix delegation on the VPC CNI** raises pods-per-node from 35 to 110 — otherwise the ENI/secondary-IP model caps pods far below what memory could run.
+- **One reusable module, one role per workload.** The load balancer controller role is genuinely broad (it creates ALBs, target groups, security groups) and uses AWS's own vendored policy rather than a hand-rolled one that looks narrower without being so. The secret-reader roles read exactly one Secrets Manager ARN each.
+- **`kms:ViaService` condition** on the decrypt permission: the identity can use the platform key only through Secrets Manager, so it cannot decrypt Terraform state with the same key.
+- **The application's own service account carries no AWS identity.** A separate service account exists purely to be impersonated by External Secrets. A compromised app pod cannot reach Secrets Manager even though a secret-reading identity sits in the same namespace.
+- **`for_each` over variables, never over a resource.** `for_each` keys must be known at plan time. This exact bug appeared four times — access entries, IRSA policy attachments, security group rules — always invisible locally, where the resource already existed in state, and always breaking a clean apply.
 
-**`t3.large` × 2, on-demand.** The observability stack alone needs ~4.5 GB; `t3.medium` leaves no headroom. Spot would save ~70% but a reclaimed node mid-interview isn't worth it.
+## Application
 
-## RDS: managed password, forced TLS
+- **`/healthz` does not touch the database; `/readyz` does.** If liveness checked the database, an outage would restart every replica — a recoverable dependency failure turned into a self-inflicted one.
+- **Graceful shutdown fails readiness, waits 5 s, then drains.** On pod deletion SIGTERM and endpoint removal race; removal has to reach `kube-proxy` on every node and the ALB target group. A server that exits immediately is still receiving traffic when it closes its socket.
+- **Migration failure is not fatal.** The pod comes up unready and recovers. Exiting would give CrashLoopBackOff with exponential backoff — a 30-second database blip becomes minutes of downtime.
+- **Metrics labelled by route pattern, never raw path.** Raw paths are a cardinality explosion that takes Prometheus down.
+- **Histogram buckets straddle 250 ms** so the latency SLO is counted at a real bucket boundary rather than interpolated across one.
+- **Traces on the OTel SDK, metrics on the Prometheus client.** OTel's HTTP semantic conventions would rename `http_requests_total`, rewriting every recording rule and burn-rate alert as a side effect of a plumbing change. Exemplars link the two.
+- **Distroless static, non-root, read-only root filesystem.** No shell, no package manager. Exec-form `ENTRYPOINT` so the binary is PID 1 and gets SIGTERM directly — shell form would route it to `/bin/sh`, which distroless does not have.
 
-**`manage_master_user_password = true`.** RDS generates and rotates the credential in Secrets Manager; Terraform never sees it, so it can't leak through state or a CI log. Trade-off: the secret ARN changes on every environment rebuild (see `scripts/sync-values.sh`).
+## Observability
 
-**`rds.force_ssl = 1`** in the parameter group — without it, `sslmode=require` on the client is a promise the server never verifies.
+- **One OTel Collector, DaemonSet, doing logs and traces.** Not the agent-plus-gateway topology: that earns its cost once you need tail sampling, cross-node aggregation or a single vendor egress. DaemonSet is not optional for the log half regardless — the `filelog` receiver reads `/var/log/pods` off the host.
+- **Traces take a node-local hop** to the collector on the pod's own node via `hostPort`, so losing one node's collector affects only that node's pods.
+- **No metrics pipeline in the collector** — set to `null` explicitly, because a Helm map merge cannot delete a key by omitting it. Prometheus scrapes the application directly.
+- **Loki `SingleBinary`, filesystem storage.** Distributed mode is right at scale and roughly 6x the footprint two `t3.large` nodes have spare.
+- **Tempo's metrics generator draws the service graph** from real parent-child span relationships, so it cannot drift from reality the way a hand-maintained diagram does. Needs `enableRemoteWriteReceiver` on Prometheus; without it the generator retries silently and nothing ever appears.
+- **Exemplars are the link between all three signals**, and every hop has to be right: OpenMetrics on `/metrics` (the classic text format has no syntax for exemplars), `exemplar-storage` on Prometheus, `exemplarTraceIdDestinations` on the Grafana datasource, and `"exemplar": true` on the dashboard target. Miss any one and there is no error anywhere — the link just does not exist.
+- **SLO burn-rate alerts, not `CPU > 80%`.** Four thresholds from the Google SRE workbook. Burn rate 1 means the 30-day error budget lasts exactly 30 days; 14.4 means it is gone in two days. Each alert pairs a long window (proves the burn is real) with a short one (confirms it is still happening), so it resolves when the incident does instead of hanging for hours. Recording rules compute the ratio once per window instead of inline in six alert expressions.
+- **Control-plane scrape jobs disabled.** EKS does not expose `kube-controller-manager`, `kube-scheduler`, `etcd` or `kube-proxy`; each left enabled fires a permanent "target down", which trains people to ignore alerts.
+- **Alertmanager routes on `severity`, not on alert name**, so a new alert inherits the right urgency without touching the routing tree.
 
-**Security group references the EKS cluster SG**, not a CIDR. Under the AWS VPC CNI, pods share the node's ENI and its security groups — so this is what actually grants pod-to-database access, and it stays correct when subnets change.
+## GitOps
 
-## IRSA: one reusable module, least privilege where it counts
+- **Argo CD is the only thing Terraform installs in the cluster.** Everything else is an Argo `Application`. Adding a component is a pull request, not a Terraform change.
+- **Rejected: Amazon EKS Capabilities** (managed Argo CD, GA Nov 2025). It bills separately, infrastructure in AWS-owned accounts cannot be shown live, and self-hosting is the daily-driver tool. In production the managed option is probably the better default — it removes upgrade, HA and CVE burden for the GitOps engine itself.
+- **Multi-source Applications** (`ref: values`), because a single-source Application resolves `valueFiles` relative to its own path and refuses to escape it.
+- **Sync waves 0/1/2.** External Secrets must exist before the application, or its `ExternalSecret` has no controller and the pod starts without a credential. The collector must exist before the application, or the first spans go nowhere.
+- **`ServerSideApply`** for kube-prometheus-stack: its CRDs exceed the annotation size limit that client-side apply uses to store last-applied state.
+- **`terraform state rm` before `destroy`** for the Argo CD release. The Helm provider authenticates through the cluster endpoint, which stops answering once the cluster is gone. Accurate rather than evasive: destroying the cluster destroys what is inside it anyway.
 
-Every AWS-facing workload gets its own role and its own trust condition pinned to one namespace/service-account pair — never a shared identity.
+## CI/CD
 
-**Two roles show the contrast on purpose.** The Load Balancer Controller role is genuinely broad (it creates ALBs, target groups, security groups) and uses AWS's own vendored IAM policy rather than a hand-rolled one that would look narrower without being so. The `demo-app-secrets` role reads exactly one Secrets Manager ARN, decrypts with one KMS key, and nothing else — scoped with a `kms:ViaService` condition so it can't touch the same key's other uses (state, ECR).
+- **Three workflows split by trigger, not by tool.** `environment` is the only one that mutates infrastructure — push to `main`, or `workflow_dispatch` with a typed `up`/`down` confirmation, behind a GitHub Environment with a required reviewer.
+- **`app-release` never touches the cluster.** It ends with a Git commit. No kubeconfig, no cluster token, no cluster role exists in it.
+- **Security gates ordered so failures are cheap.** Trivy against source first (a bad `go.mod` fails in 30 s pointing at the dependency, not after a 5-minute build pointing at a layer digest) → build locally with `push: false` → Trivy against the image → SBOM → push → cosign sign.
+- **Keyless signing.** The identity is the workflow's OIDC token, certified by Fulcio and recorded in Rekor. No private key to store, rotate or leak. Verification is not yet enforced in-cluster; a Kyverno `verifyImages` policy is the next step and the reason to sign now.
+- **Deploy by digest, not tag.** A signature covers a digest. ECR tags are immutable here too, but the digest is what cosign actually signed.
 
-**`for_each` over variables, never over a resource.** `for_each` keys must be known at plan time; a resource like `aws_eks_access_entry` doesn't exist yet on a from-scratch apply. This exact class of bug appeared four times across the codebase — access entries, IRSA policy attachments, security group rules — always invisible locally (where the resource already existed in state) and always breaking on a clean `apply`.
+---
 
-## Application: Go, instrumented with help from an LLM
+## Bugs found and fixed
 
-Not a Go developer. Specified the behavior — which endpoints, why liveness must not touch the database, which metrics with which labels, how graceful shutdown must be sequenced — and used an LLM for the syntax. Every design decision below is defensible; the CTE bug is evidence of that.
+The part worth the most airtime: these are what separate reading LLM output from owning it.
 
-**`/healthz` doesn't touch the database; `/readyz` does.** If liveness checked the database, an outage would restart every replica — a recoverable dependency failure converted into a self-inflicted one.
-
-**Graceful shutdown waits 5 seconds before draining.** On pod deletion, SIGTERM and Service-endpoint removal race. Removal has to propagate to `kube-proxy` on every node and to the ALB target group — seconds, not instant. A server that exits immediately still receives traffic when it closes its socket. Sequence: fail readiness → wait → drain.
-
-**Metrics labelled by route pattern, never raw path** — raw paths are a cardinality explosion that takes Prometheus down.
-
-**Histogram buckets straddle 250ms** so the latency SLO is counted at an exact bucket boundary, not interpolated.
-
-**PostgreSQL CTE snapshot bug — found and fixed.** All sub-statements of a `WITH` clause run against the same snapshot; a sibling `SELECT` can't see a row a data-modifying CTE just inserted. The visit counter reported one behind forever. Reproduced in `psql`, fixed by counting pre-insert and adding the new row explicitly. This is the clearest evidence of actually reviewing LLM-generated code rather than trusting it.
-
-**Distroless static base, non-root, read-only root filesystem.** No shell, no package manager. `readOnlyRootFilesystem` needs no `emptyDir` because a static Go binary writes nothing. Exec-form `ENTRYPOINT` so the binary is PID 1 and receives SIGTERM directly — shell form would route it to `/bin/sh`, which distroless doesn't have.
-
-**Traces via OpenTelemetry SDK; metrics stay on the Prometheus client.** OTel's HTTP semantic conventions rename `http_requests_total` to `http_server_request_duration_seconds` — switching would rewrite every SLO recording rule and burn-rate alert as a side effect of a plumbing change. Traces go through OTel because Prometheus doesn't do traces; exemplars link the two.
-
-**Exemplars require `EnableOpenMetrics: true` on the `/metrics` handler.** The classic Prometheus text format has no syntax for exemplars — they're computed, stored, then silently dropped on the way out without this flag.
-
-**Two production bugs in the OTel setup, both from version coupling.** `semconv.DeploymentEnvironmentName` didn't exist in the pinned semconv version (the attribute was renamed between convention versions). Then `resource.Merge` failed at startup with a schema-URL conflict between `resource.Default()` and the semconv package — different versions, same failure family. Fixed by writing attribute keys as literal strings (`"deployment.environment"`) instead of through semconv helpers, decoupling from convention-version churn entirely.
-
-## Helm chart: hand-written, not Kustomize
-
-Reversed an earlier plan. Chosen because it's the tool used daily and must be defended live, and because the rest of the platform (kube-prometheus-stack, Loki, External Secrets) already arrives as Helm charts — one mechanism instead of two.
-
-**`values.yaml` + `values-dev.yaml`**, chart separate from environment values. Slightly redundant with one environment, but it's the parameterization the brief asks for.
-
-**Selector labels exclude version and chart.** A Deployment's selector is immutable after creation; any label that changes between releases must never appear in it.
-
-**Deploy by digest when available.** A digest is byte-exact and verifiable against a signature. ECR is `IMMUTABLE` tags too, but the digest is what Cosign actually signs.
-
-**Grafana dashboard JSON loaded via `.Files.Get`, not inlined.** Grafana's legend format (`{{route}}`) uses the same delimiters as Helm templating. Inlining the JSON makes Helm try to execute those as template functions — including inside comments, since everything under `templates/` is template source regardless of what YAML would treat as a comment.
-
-## ArgoCD: the one thing Terraform installs into the cluster
-
-Terraform installs exactly two things via `helm_release`: Argo CD itself, and a single root `Application` (app-of-apps). Everything else — the load balancer controller, External Secrets, the observability stack, the application — is an Argo `Application` discovered from `argocd/argo-manifests/`. Adding a component is a pull request, not a Terraform change.
-
-**Alternative considered and rejected: Amazon EKS Capabilities** (GA Nov 2025), fully managed Argo CD in AWS-owned infrastructure. Rejected here because it bills separately, because infrastructure running outside this account can't be demonstrated live, and because self-hosting is the daily-driver tool. In production, the managed capability would be the better default — it removes upgrade/HA/CVE burden for the GitOps engine itself.
-
-**Multi-source Applications** (`ref: values`) because the chart and its environment values live in different directories — a single-source Application resolves `valueFiles` relative to its own path and refuses to escape it.
-
-**Sync waves**, not arbitrary ordering: infra controllers at wave 0–1, the application at wave 2. External Secrets and the load balancer controller must exist before anything that depends on them syncs.
-
-**`helm_release` for Argo CD cannot be destroyed cleanly once the cluster is gone** — the Helm provider authenticates via the cluster endpoint, which no longer answers. `terraform state rm` before `terraform destroy` is the fix: accurate rather than evasive, since destroying the cluster destroys everything inside it anyway.
-
-## Observability: Loki, Tempo, one OTel Collector
-
-**Single OTel Collector in DaemonSet mode**, doing both logs and traces — not the agent-plus-gateway topology used at scale. That shape earns its cost once you need tail sampling, cross-node aggregation, or one egress point to a vendor; here it would be two hops and roughly double the memory for two nodes and one application. DaemonSet isn't optional for the log half regardless: the `filelog` receiver reads `/var/log/pods` off the host, so it has to run on every host whose logs matter.
-
-**No metrics pipeline in the collector.** Deliberate — see the app-instrumentation note above. Prometheus scrapes the application directly via ServiceMonitor.
-
-**Loki: `SingleBinary` mode, filesystem storage.** The default distributed mode (separate read/write/backend StatefulSets against S3) is correct at scale and roughly 6x the footprint of what two `t3.large` nodes have spare.
-
-**Tempo's metrics generator writes a service graph** derived from actual parent-child span relationships — discovered from traffic, so it can't drift from reality the way a hand-drawn diagram can. Requires `enableRemoteWriteReceiver: true` on the Prometheus side; without it, the generator retries silently and no error appears anywhere — it just never shows up.
-
-**Exemplars are the link between all three signals.** A histogram observation carries a trace ID; the Grafana Loki datasource has a `derivedFields` regex on `trace_id` that renders it as a link. The demo path: burn-rate alert fires → dashboard shows the latency spike → click the exemplar → trace opens → "Logs for this span" → the pod's log lines in that exact window. One minute, zero typed queries.
-
-**SLO burn-rate alerts, not `CPU > 80%`.** Four thresholds from the Google SRE workbook (14.4x/1h, 6x/6h, 3x/1d, 1x/3d) pair a long window (proves the burn is real) with a short one (confirms it's still happening), so the alert resolves when the incident does instead of hanging for hours after. Recording rules compute the error ratio once per window rather than inline in every alert expression — cheaper, and readable when an alert fires at 3am.
-
-**`kubeControllerManager` / `kubeScheduler` / `kubeEtcd` / `kubeProxy` disabled** in kube-prometheus-stack. EKS doesn't expose the control plane, so each left enabled produces a permanently-firing "target down" alert — training the team to ignore alerts, which is worse than not having them.
-
-## CI/CD: three workflows, split by trigger not by tool
-
-**`pr-checks.yml`** has no apply path and no `pull_request` trigger anywhere near `environment.yml`. That's structural, not an `if:` condition someone could get wrong — a mistake in a conditional could let a pull request apply infrastructure; a missing trigger cannot.
-
-**`environment.yml`** is the only workflow that changes infrastructure — `push` to `main` (reviewed changes) or manual `workflow_dispatch` with a typed confirmation (`up`/`down`). Runs behind a GitHub Environment with a required reviewer.
-
-**`app-release.yml` never touches the cluster.** It ends with a Git commit; Argo CD reconciles from there. No kubeconfig, no cluster token, no cluster role exists in this workflow — if compromised, it can push one image to one ECR repository and nothing else.
-
-**GitHub's OIDC `sub` claim carries numeric IDs, not names**, on this account: `repo:owner@<id>/repo@<id>:ref:...` rather than the documented `repo:owner/repo:...`. Every published example shows the name-only form. Diagnosed by printing the actual token from a workflow and comparing it against the live trust policy — STS deliberately never says which claim failed, so that's the only reliable method. Binding to the numeric ID is the stronger form: a repo can be renamed or recreated under the same name; an ID is never reissued.
-
-**GitHub rewrites the `sub` claim when a job declares an `environment:`.** A job with an approval gate presents `environment:dev` in its token instead of `ref:refs/heads/main` — so adding the approval gate (a security improvement) broke authentication the first time, in a way the error message gave no hint about.
-
-## Security gate: ordered so failures are cheap
-
-1. **Trivy dependency scan** runs against source, before the build — a vulnerable `go.mod` entry fails in 30 seconds pointing at the dependency, not after a 5-minute build pointing at a layer digest.
-2. **Build locally** (`push: false, load: true`) so the image can be scanned before it's published — pushing first would make a vulnerable image already pullable.
-3. **Trivy image scan** before `docker push`.
-4. **SBOM** (SPDX) generated and attached as a Cosign attestation — not useful today, useful the morning a new CVE lands and the question is which images contain the affected package.
-5. **Cosign keyless signing** — identity is the workflow's own OIDC token, certified by Fulcio, recorded in Rekor. No private key to store, rotate, or leak.
-
-**A real gate caught a real CVE on first use**: two CRITICAL findings in `pgx` (fixed upstream, one version bump). `ignore-unfixed: true` already skips CVEs with no available patch — these had one, so the gate correctly blocked the build rather than being disabled to make it pass.
-
-## Teardown: not a bare `terraform destroy`
-
-Deleting an EKS cluster tears down the control plane but doesn't drain what's running on it — the load balancer controller and CSI driver lose their API server mid-reconcile. PersistentVolumeClaims become orphaned EBS volumes; Ingresses become orphaned load balancers and security groups; those security groups then block VPC deletion entirely. AWS ships a standalone cleanup script alongside its own EKS reference architecture for exactly this reason — this isn't a workaround, it's an acknowledged gap between "deklarative infrastructure" and "deklarative cluster."
-
-**Two-phase destroy, deliberately using `-target`.** Phase 1 destroys `module.eks` and `module.database` only. Phase 2 sweeps AWS resources the load balancer controller created, identified by tag (`elbv2.k8s.aws/cluster`) since they're not in Terraform state and have no predictable name. Phase 3 destroys everything else. `-target` is normally a smell; here it's the point — the sweep is only meaningful once the controller is provably dead, and that ordering can't be expressed in the dependency graph because the dependency runs *inside* a resource Terraform is destroying.
-
-**Nine fixes, each found by an actual failed teardown, not by reasoning about it in advance:**
-
-1. **PVCs before workloads is backwards.** A PVC carries a `pvc-protection` finalizer released only once no pod mounts it — deleting claims while Prometheus/Grafana still run hangs until timeout and achieves nothing. Fix: delete workloads, wait for pods to terminate, *then* delete PVCs.
-2. **No wait after deleting Ingresses.** The controller reconciles asynchronously; `kubectl delete` returning isn't the same as the ALB being gone. Moving on early left an ALB holding ENIs through a 13-minute `destroy` that then failed with a `DependencyViolation` naming an ENI and explaining nothing.
-3. **Shared ALB group + one-at-a-time Ingress deletion causes the controller to recreate the ALB.** With `group.name` shared between `demo-app` and Grafana, deleting one Ingress leaves the group non-empty — the controller reconciles the remaining member by recreating the load balancer (and a fresh security group) *after* the sweep already ran. Fix: delete all Ingresses in one call.
-4. **Argo Application finalizers block forever if the controller goes first.** `resources-finalizer.argocd.argoproj.io` exists so deleting an Application also deletes what it deployed. During teardown that inverts: no controller left to run the finalizer, object stuck in `Terminating`, taking the owning `helm_release` down with it. Fix: strip finalizers before deleting anything.
-5. **`helm_release` for Argo CD can't be destroyed once the cluster is gone** — see the ArgoCD section above. Fix: `terraform state rm` first.
-6. **No `terraform init` before `destroy` in CI.** Trivial, but a fresh runner has no `.terraform/` directory and the first CI-run teardown failed on this alone.
-7. **`cluster_admin_principal_arns` lived only in a gitignored `terraform.tfvars`.** A CI apply saw an empty list and correctly removed the access entry it couldn't see in configuration — silently revoking the operator's own cluster access mid-session, surfacing later as an unexplained `Unauthorized`. Fix: a real IAM ARN isn't a secret; it now has a non-empty default in code, merged with the identity currently running the apply.
-8. **PVC deletion needs `--wait=false` + poll, not `--wait=true`.** A blocking delete against a claim whose finalizer hasn't cleared hangs for the full timeout and *reports failure* even though deletion is progressing normally.
-9. **Verification must query the AWS API, not trust the destroy output.** Terraform reporting success only means it deleted what it knew about — the script's final phase checks nine resource categories independently (clusters, VPCs, NAT gateways, EIPs, load balancers, target groups, volumes, RDS instances, leftover security groups).
-
-**Result:** two consecutive full `destroy → apply` cycles through the CI pipeline, unattended, with all nine categories verified empty both times. This is the strongest evidence in the whole project that "Terraform code is the source of truth, not the running environment" — the brief's own phrase — actually holds.
-
-## What would change in production
-
-- Multi-AZ RDS (currently single-AZ — the single largest deliberate availability compromise, made explicit as a variable)
-- One NAT gateway per AZ instead of one shared
-- Tail sampling in a gateway-tier OTel Collector instead of always-on sampling
-- A permissions boundary + Access-Analyzer-generated policy for the Terraform CI role, replacing `AdministratorAccess`
-- Application-level database user instead of connecting as the RDS master user
-- Grafana admin credential synced from Secrets Manager instead of chart-generated
-- Kyverno `verifyImages` policy enforcing the Cosign signature already being produced
+- **PostgreSQL CTE snapshot.** All sub-statements of a `WITH` clause see the same snapshot, so a sibling `SELECT` cannot see the row a data-modifying CTE just inserted. The visit counter was permanently one behind. Reproduced in `psql`, fixed by counting pre-insert and adding the new row explicitly.
+- **OTLP endpoint semantics — traces silently never left the pod.** `OTEL_EXPORTER_OTLP_ENDPOINT` is a *base* URL per the OTLP spec; the SDK's `WithEndpointURL` treats its argument as the *complete* traces endpoint and, given no path, sets the path to `/`. The collector serves only `/v1/traces`, so every export was answered with a 404. Nothing looked wrong: the app was `Healthy`, logged `"tracing":true`, generated trace IDs, returned them to callers, and attached them to exemplars Prometheus dutifully stored — all pointing at traces that did not exist. Found by reading the collector's own `otelcol_receiver_accepted_spans`, which did not exist at all, meaning zero spans had ever arrived.
+- **…and the reason nobody noticed.** The SDK reports async failures through its global error handler, which writes to Go's standard `log` package, which `slog.SetDefault` routes to the JSON handler at **INFO**. A completely dead trace pipeline read as one unremarkable info line. Now routed through `slog` at ERROR with a stable message.
+- **The collector was not being scraped.** `serviceMonitor.enabled: true` is accepted and silently does nothing in `daemonset` mode — the chart only renders a ServiceMonitor alongside a Service, and renders neither unless `service.enabled` is set. Replaced with a PodMonitor, which is the right shape anyway: a Service in front of a DaemonSet scrapes one arbitrary collector per interval.
+- **Grafana's Tempo datasource pointed at port 3100** — Loki's port, not open on the Tempo service at all. Tempo's query API is 3200.
+- **Log-to-trace correlation matched a label that does not exist.** The `filelog` receiver ships each container line as an opaque string after CRI parsing, so the application's JSON stays in the body and `trace_id` is neither a label nor structured metadata. Confirmed against the Loki store. Changed to a regex derived field over the line.
+- **external-dns cannot own a zone apex record.** Its ownership TXT is named by prefixing the record type onto the first label, so `grafana.incode-demo.grandemeks.tech` becomes `cname-grafana.incode-demo…` (inside the zone, fine) but the apex becomes `cname-incode-demo.grandemeks.tech` — a *sibling* under the registrar-hosted parent, outside the delegated zone, dropped by `domainFilters`. external-dns therefore created the apex A/AAAA and silently skipped their ownership record, after which it no longer recognised them as its own and would never correct them. So after a rebuild the apex kept pointing at the previous ALB and the hostname stopped resolving, while the logs said "All records are already up to date" every minute. Fixed with `txtPrefix: "%{record_type}-."` — the trailing period makes the ownership record a *subdomain* instead of a sibling.
+- **Grafana's admin password was regenerated on every sync.** With `adminPassword` unset the chart calls `randAlphaNum`, which returns a new value per render, and Argo renders every sync. The Secret was rewritten each time, the pod template's checksum over it restarted Grafana each time, and Grafana — which keeps its admin password in its own database and will not overwrite an existing admin user from the environment — went on accepting only the password from first install. Nobody could log in, and Grafana's own sidecars were answered 401 on the provisioning reload API. Now sourced from Secrets Manager through External Secrets, exactly like the database credential.
+- **Two OTel version-coupling failures.** `semconv.DeploymentEnvironmentName` did not exist in the pinned semconv version, then `resource.Merge` failed at startup on a schema-URL conflict between `resource.Default()` and the semconv package. Fixed by writing attribute keys as literal strings, decoupling from convention-version churn.
+- **GitHub's OIDC `sub` claim carries numeric IDs on this account** — `repo:owner@<id>/repo@<id>:ref:…`, not the documented name form every published example shows. STS never says which claim failed, so the only reliable method was printing the actual token from a workflow and diffing it against the trust policy. Binding to the ID is the stronger form: a repo can be renamed or recreated under the same name; an ID is never reissued.
+- **GitHub rewrites `sub` when a job declares an `environment:`.** Adding the approval gate — a security improvement — broke authentication, because the token then presents `environment:dev` instead of `ref:refs/heads/main`.
+- **Helm templating vs Grafana legends.** Grafana's `{{route}}` uses the same delimiters as Helm. Dashboard JSON is loaded with `.Files.Get` rather than inlined, because everything under `templates/` is template source — including inside what YAML would call a comment.
+
+## Known rough edges — be ready for these
+
+- **A pull request can assume the Terraform admin role.** The bootstrap trust policy trusts `pull_request`, and for `pull_request` events GitHub runs the workflow file *from the head branch* — so a PR could add a step that applies or destroys infrastructure. The real control is branch protection plus the required reviewer on the `environment` job, not the workflow split. Worth stating plainly rather than claiming the split is structural.
+- **`terraform fmt -check -recursive` never sees `terraform/modules/`**, because CI runs it per-stack with a `working-directory`. Most of the code lives in `modules/`.
+- **No Go job in CI.** `pr-checks` triggers on `app/**` but never builds, vets or tests the Go code.
+- **`teardown.sh` does not touch Route53.** Record cleanup depends on external-dns still running when the Ingress is deleted.
+- **Single AZ RDS, single NAT, no cluster autoscaler, no pod-level network policy.** All deliberate cost choices for a demo environment; all things I would change for production.
+
+## What production would add
+
+Tail sampling in a gateway collector, and `TraceIDRatioBased` instead of `AlwaysSample`. Thanos or Mimir for long-term metrics on S3. Multi-AZ RDS with automated failover testing. Kyverno enforcing image signatures. Cluster autoscaler or Karpenter. Network policies. A real Alertmanager receiver instead of two null ones. Grafana behind SSO instead of a local admin.
