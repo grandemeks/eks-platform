@@ -7,10 +7,10 @@
 
 image:
   repository: 385291933614.dkr.ecr.eu-central-1.amazonaws.com/eks-platform/demo-app
-  tag: "db9962f"
+  tag: "0d36506"
   # The digest is what actually gets deployed. The tag stays for humans and
   # for the version label on metrics.
-  digest: "sha256:a2d1cd30af242c91dc1e1a023db647fa5a9e74d33eb63f8ded1ff063f6eb5872"
+  digest: "sha256:912636649c2e118193a97310a748ac18b50e71b17c969a61725344c8a1fc64b1"
 
 database:
   host: "eks-platform-dev.cty0csq288gi.eu-central-1.rds.amazonaws.com"
