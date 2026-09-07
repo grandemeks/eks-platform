@@ -1,38 +1,30 @@
-# Argo CD is bootstrapped by Terraform rather than by Argo CD
-# Its values therefore live with the Terraform that installs it, not in
-# argocd/configs/ with everything Argo manages itself. That boundary is the
-# point: exactly one component is installed imperatively, and it is the one that
-# makes everything else declarative.
+# Argo CD is installed by Terraform, so its values live here and not in
+# argocd/configs/ with the components Argo manages itself.
 
 global:
-  # Two nodes only, so nothing here asks for more than it needs.
+  # Two nodes: hard anti-affinity would leave replicas unschedulable.
   affinity:
     podAntiAffinity: soft
 
 crds:
   install: true
-  # CRDs stay behind when the release is uninstalled, because deleting a CRD
-  # deletes every Application object with it. Terraform destroy removes the
-  # cluster wholesale anyway; this protects against an accidental helm uninstall.
+  # false, so uninstalling the release also deletes every Application object
+  # with the CRD. Acceptable only because terraform destroy takes the whole
+  # cluster; set true if this cluster ever outlives a helm uninstall.
   keep: false
 
 configs:
   params:
-    # TLS terminates at the load balancer in front of Argo, so the server itself
-    # speaks plaintext. Running TLS on both sides would mean either a self-signed
-    # certificate the browser rejects, or a second certificate to manage for no
-    # security gain — the hop is inside the VPC.
+    # TLS terminates at the ALB; the remaining hop is inside the VPC. Without
+    # this the server double-terminates and the ALB health check fails.
     server.insecure: true
 
   cm:
-    # Resource tracking by annotation rather than by label. The label method
-    # writes app.kubernetes.io/instance on every managed object, which collides
-    # with the same label used by Helm charts and produces phantom OutOfSync
-    # states that are painful to debug.
+    # The label method writes app.kubernetes.io/instance, which collides with
+    # the same label set by Helm charts and produces phantom OutOfSync states.
     application.resourceTrackingMethod: annotation
 
-    # Ignore the replica count on Deployments that an HPA owns, so Argo does not
-    # fight the autoscaler over the same field.
+    # Or Argo fights the HPA over spec.replicas.
     resource.customizations.ignoreDifferences.apps_Deployment: |
       jqPathExpressions:
         - .spec.replicas
@@ -62,8 +54,7 @@ server:
       memory: 256Mi
 
 applicationSet:
-  # Not used yet, but it is what a second environment would be built with, so
-  # it stays enabled rather than being switched on later under time pressure.
+  # Unused so far; this is how a second environment would be added.
   enabled: true
   resources:
     requests:
@@ -73,13 +64,11 @@ applicationSet:
       memory: 256Mi
 
 notifications:
-  # Alerting is handled by Alertmanager. A second notification path would mean
-  # two places to look when something is wrong.
+  # Alertmanager owns alerting; a second path means two places to look.
   enabled: false
 
 dex:
-  # Single operator, no SSO provider. Disabled rather than left running as an
-  # unused authentication surface.
+  # No SSO provider, so this would be an unused authentication surface.
   enabled: false
 
 redis:

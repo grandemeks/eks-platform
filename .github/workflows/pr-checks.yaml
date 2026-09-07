@@ -1,12 +1,7 @@
 name: pr checks
 
-# Everything that validates a change before it can merge, in one place, so a
-# pull request has one set of status checks rather than several.
-#
-# Deliberately has no apply path and no write access to anything. The workflow
-# that changes infrastructure is a separate file with no pull_request trigger
-# at all — a structural boundary rather than an `if:` condition that could be
-# written wrong.
+# Read-only by design: no apply path. Applies live in environment.yaml, which has
+# no pull_request trigger. Keep it that way; do not add apply steps here.
 on:
   pull_request:
     paths:
@@ -22,8 +17,7 @@ permissions:
   pull-requests: write   # to post the plan as a comment
 
 concurrency:
-  # A push that lands while an earlier run is still going makes that run stale,
-  # so cancelling it is correct rather than wasteful.
+  # A new push makes the in-flight plan stale, so cancelling it is correct.
   group: pr-checks-${{ github.ref }}
   cancel-in-progress: true
 
@@ -32,15 +26,12 @@ env:
   TF_VERSION: "1.13.3"
 
 jobs:
-  # ---------------------------------------------------------------------------
   terraform:
     name: terraform (${{ matrix.stack }})
     runs-on: ubuntu-latest
 
     strategy:
-      # Both stacks run even if one fails, so a reviewer sees the whole picture
-      # in one go instead of discovering the second failure after fixing the
-      # first.
+      # Both stacks report, so a reviewer sees every failure in one run.
       fail-fast: false
       matrix:
         stack: [bootstrap, envs/dev]
@@ -51,14 +42,11 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: ${{ env.TF_VERSION }}
-          # The wrapper captures stdout so the plan can be posted to the PR.
+          # Required: steps.plan.outputs.stdout only exists with the wrapper.
           terraform_wrapper: true
 
-      # No access keys anywhere. GitHub issues a short-lived OIDC token, AWS
-      # exchanges it for temporary credentials, and the role's trust policy
-      # restricts that exchange to this repository. The role ARN is a
-      # repository variable rather than a secret: it is useless to anyone
-      # without the trust relationship.
+      # OIDC, no static keys. The role ARN is a repository variable, not a secret:
+      # it is useless without the trust policy that pins it to this repository.
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -93,9 +81,6 @@ jobs:
           tflint --format compact --recursive
         continue-on-error: true
 
-      # Static analysis of the Terraform itself: unencrypted storage, public
-      # access, permissive security groups. Catches the class of mistake a plan
-      # output shows plainly but a human skims past.
       - name: Trivy config scan
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -119,14 +104,13 @@ jobs:
         with:
           script: |
             const stack = process.env.STACK;
-            // GitHub rejects comments over 65536 characters. A truncated plan
-            // pointing at the run is more useful than a failed comment.
+            // GitHub rejects comments over 65536 chars; truncate rather than fail.
             const raw = process.env.PLAN || '(no output)';
             const plan = raw.length > 60000
               ? raw.slice(0, 60000) + '\n\n... truncated, see the workflow run'
               : raw;
 
-            const marker = `### Terraform plan — \`${stack}\``;
+            const marker = `### Terraform plan: \`${stack}\``;
             const body = [
               marker, '',
               '| check | result |', '| --- | --- |',
@@ -138,8 +122,7 @@ jobs:
               '```terraform', plan, '```', '', '</details>',
             ].join('\n');
 
-            // Update this stack's existing comment rather than adding one per
-            // push, so the PR stays readable.
+            // Update this stack's comment in place instead of adding one per push.
             const { data: comments } = await github.rest.issues.listComments({
               owner: context.repo.owner, repo: context.repo.repo,
               issue_number: context.issue.number,
@@ -159,14 +142,11 @@ jobs:
               });
             }
 
-      # Formatting and plan failures block the merge. tflint and Trivy are
-      # advisory: they flag things worth discussing rather than things that are
-      # automatically wrong, and review is the right place for that.
+      # fmt and plan block the merge; tflint and Trivy stay advisory on purpose.
       - name: Fail on plan or formatting errors
         if: steps.plan.outcome == 'failure' || steps.fmt.outcome == 'failure'
         run: exit 1
 
-  # ---------------------------------------------------------------------------
   helm:
     name: helm
     runs-on: ubuntu-latest
@@ -180,11 +160,8 @@ jobs:
           helm lint helm-charts/demo-app \
             -f argocd/configs/demo-app/values-dev.yaml
 
-      # Argo CD renders this chart, not this pipeline, so a template error
-      # would otherwise surface as an Application stuck in ComparisonError,
-      # visible only to whoever opens the Argo UI. Rendering here moves the
-      # failure to the pull request. A chart that lints cleanly can still fail
-      # to render: a missing required value only appears at template time.
+      # lint is not enough: a missing required value only fails at template time,
+      # and in production that surfaces as an Argo Application in ComparisonError.
       - name: helm template
         run: |
           helm template demo-app helm-charts/demo-app \
@@ -193,9 +170,7 @@ jobs:
           echo "Rendered objects:"
           grep -E '^kind:' /tmp/rendered.yaml | sort | uniq -c
 
-      # Static analysis of the rendered manifests: privileged containers,
-      # missing limits, writable root filesystems. Same idea as the Terraform
-      # config scan, other half of the stack.
+      # Scans the rendered output above, so it needs the helm template step first.
       - name: Trivy manifest scan
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -205,7 +180,6 @@ jobs:
           exit-code: '0'
           format: table
 
-  # ---------------------------------------------------------------------------
   secrets:
     name: secret scan
     runs-on: ubuntu-latest
@@ -213,13 +187,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Gitleaks needs history to scan the commits a PR introduces, not
-          # just the final tree. A credential added and then removed in a later
-          # commit is still in the history and still leaked.
+          # Gitleaks scans history, not the final tree: a secret added and then
+          # removed in a later commit is still leaked.
           fetch-depth: 0
 
-      # A leaked credential in a public repository is an incident, not a
-      # hypothetical. This is the last gate before merge.
       - uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

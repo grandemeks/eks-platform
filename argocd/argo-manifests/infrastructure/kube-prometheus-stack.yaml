@@ -4,8 +4,7 @@ metadata:
   name: kube-prometheus-stack
   namespace: argocd
   annotations:
-    # Wave 1: after the controllers, before the application. The demo app's
-    # ServiceMonitor and PrometheusRule need these CRDs to already exist.
+    # Wave 1: the app's ServiceMonitor and PrometheusRule need these CRDs first.
     argocd.argoproj.io/sync-wave: "1"
   finalizers:
     - resources-finalizer.argocd.argoproj.io
@@ -19,10 +18,8 @@ spec:
       helm:
         valueFiles:
           - $values/argocd/configs/infrastructure/kube-prometheus-stack-values.yaml
-        # The Prometheus operator CRDs exceed the 262kB annotation limit that
-        # client-side apply uses to store last-applied-configuration. Skipping
-        # them here and relying on ServerSideApply below is what keeps the sync
-        # from failing on the CRDs alone.
+        # CRDs are applied, not skipped. They exceed the 262kB annotation limit
+        # client-side apply uses, so ServerSideApply below is mandatory.
         skipCrds: false
 
     - repoURL: https://github.com/grandemeks/eks-platform.git
@@ -39,9 +36,7 @@ spec:
       selfHeal: true
     syncOptions:
       - CreateNamespace=true
-      # Required, not optional, for this chart: server-side apply stores the
-      # field manager on the server instead of in an annotation, so the large
-      # CRDs go through.
+      # Mandatory here: the operator CRDs exceed the client-side apply annotation limit.
       - ServerSideApply=true
 
     retry:

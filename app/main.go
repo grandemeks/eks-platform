@@ -11,18 +11,12 @@ import (
 	"time"
 )
 
-// Version is overridden at build time with:
-//
-//	-ldflags "-X main.Version=$(git rev-parse --short HEAD)"
-//
-// so a running pod can be traced back to an exact commit.
+// Version is set at build time via -ldflags "-X main.Version=<sha>".
 var Version = "dev"
 
 func main() {
-	// JSON to stdout, which is the only thing a container should do with logs.
-	// The OTel collector reads them off the node with its filelog receiver and
-	// forwards them to Loki; structured fields survive that trip as queryable
-	// attributes rather than as text to match against.
+	// JSON to stdout: the collector's filelog receiver forwards these to Loki,
+	// where structured fields stay queryable instead of needing a regex.
 	log := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
@@ -46,14 +40,12 @@ func run(log *slog.Logger) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
 
-	// Returns a no-op shutdown when no OTLP endpoint is configured, so the
-	// same binary runs locally without a collector.
+	// No-op shutdown when no OTLP endpoint is set, so the same binary runs
+	// locally without a collector.
 	shutdownTracing, err := initTracing(ctx, cfg)
 	tracingEnabled := err == nil && os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT") != ""
 	if err != nil {
-		// Not fatal. Losing traces is a degraded state; refusing to start
-		// because the telemetry pipeline is unavailable would make the
-		// observability stack a hard dependency of the thing it observes.
+		// Not fatal: the telemetry pipeline must not be a hard startup dependency.
 		log.Warn("tracing disabled", slog.Any("error", err))
 		shutdownTracing = func(context.Context) error { return nil }
 	}
@@ -64,10 +56,8 @@ func run(log *slog.Logger) error {
 	}
 	defer store.Close()
 
-	// Migration is allowed to fail without taking the process down: the pod
-	// comes up, reports unready, and recovers on its own once the database is
-	// reachable. Exiting here would produce CrashLoopBackOff with exponential
-	// backoff, turning a thirty-second database blip into minutes of downtime.
+	// Warn, don't exit: exiting here turns a brief DB blip into CrashLoopBackOff
+	// with exponential backoff. Readiness keeps the pod out of the LB meanwhile.
 	migrateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	if err := store.Migrate(migrateCtx); err != nil {
 		log.Warn("schema migration failed, continuing in unready state", slog.Any("error", err))
@@ -83,8 +73,8 @@ func run(log *slog.Logger) error {
 		Addr:    ":" + cfg.Port,
 		Handler: srv.Routes(),
 
-		// Without these a slow or malicious client can hold a connection open
-		// indefinitely and exhaust the server's file descriptors.
+		// Without these a slow client can hold connections open until the
+		// process runs out of file descriptors.
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      15 * time.Second,
@@ -110,20 +100,10 @@ func run(log *slog.Logger) error {
 	case <-ctx.Done():
 	}
 
-	// --- Graceful shutdown -------------------------------------------------
-	//
-	// The ordering here is what makes a rollout drop zero requests.
-	//
-	// When a pod is deleted, two things happen at the same time and racing:
-	// the kubelet sends SIGTERM, and the endpoints controller starts removing
-	// the pod from Service endpoints. That removal has to propagate to
-	// kube-proxy on every node and to the load balancer's target group, which
-	// takes seconds. A server that exits the instant it sees SIGTERM is still
-	// receiving traffic when it closes the socket, and those requests become
-	// connection-refused errors on the client side.
-	//
-	// So: fail readiness first, wait long enough for the removal to propagate,
-	// and only then drain in-flight requests.
+	// Fail readiness before draining: SIGTERM races endpoint removal, and that
+	// removal takes seconds to reach kube-proxy on every node and the ALB target
+	// group. Closing the socket first turns in-flight traffic into
+	// connection-refused. The sleep below covers that propagation window.
 	log.Info("shutdown signal received, failing readiness")
 	srv.ready.Store(false)
 
@@ -137,10 +117,8 @@ func run(log *slog.Logger) error {
 		return err
 	}
 
-	// Flushed after the server has drained, so spans from the last requests
-	// are exported rather than discarded with the batch queue. A process that
-	// exits without this loses whatever the batcher had not yet sent — which
-	// is precisely the spans from a shutdown, the ones worth having.
+	// Flush after the drain, or the batcher's unsent spans from the final
+	// requests are lost with the queue.
 	log.Info("flushing traces")
 	flushCtx, flushCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer flushCancel()

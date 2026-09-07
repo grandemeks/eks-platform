@@ -14,18 +14,7 @@ variable "private_subnet_ids" {
 }
 
 variable "allowed_security_group_ids" {
-  description = <<-EOT
-    Security groups permitted to reach the database, keyed by a stable name.
-
-    A map rather than a list because for_each keys become resource addresses in
-    state and must be known at plan time. A security group ID produced by
-    another module in the same apply is not known until apply — only the value
-    is late, so the key is written in configuration and the value resolved
-    later.
-
-    This is the EKS cluster security group: under the AWS VPC CNI, pods share
-    the node's ENI and therefore its security groups.
-  EOT
+  description = "Security groups permitted to reach the database, keyed by a stable name. Keys must be known at plan time, so a map is used rather than a list of IDs resolved during apply."
   type        = map(string)
 }
 
@@ -35,23 +24,13 @@ variable "kms_key_arn" {
 }
 
 variable "engine_major_version" {
-  description = <<-EOT
-    PostgreSQL major version. Only the major is pinned; the exact minor is
-    resolved at plan time and minor upgrades are applied automatically during
-    the maintenance window. Pinning the minor would mean a code change for
-    every security patch.
-  EOT
+  description = "PostgreSQL major version. The minor is resolved at plan time and upgraded automatically in the maintenance window."
   type        = string
   default     = "18"
 }
 
 variable "instance_class" {
-  description = <<-EOT
-    db.t4g.micro: Graviton, burstable, and the cheapest class that supports
-    Performance Insights. Sufficient for a demo workload; a production
-    equivalent would be a non-burstable class so CPU credits cannot run out
-    silently under sustained load.
-  EOT
+  description = "RDS instance class. The default is the cheapest burstable class that still supports Performance Insights; a production instance would use a non-burstable class."
   type        = string
   default     = "db.t4g.micro"
 }
@@ -63,22 +42,13 @@ variable "allocated_storage" {
 }
 
 variable "max_allocated_storage" {
-  description = <<-EOT
-    Upper bound for storage autoscaling. Set above allocated_storage so the
-    instance grows instead of hitting storage-full, which takes the database
-    offline and cannot be fixed quickly.
-  EOT
+  description = "Upper bound for storage autoscaling. Keep it above allocated_storage so the instance grows instead of hitting storage-full."
   type        = number
   default     = 50
 }
 
 variable "multi_az" {
-  description = <<-EOT
-    Single-AZ by default: Multi-AZ roughly doubles the instance cost for
-    standby capacity that a demo never exercises. This is the single largest
-    availability compromise in the environment and is deliberate — production
-    sets this to true, which is the whole reason it is a variable.
-  EOT
+  description = "Run a standby in a second AZ. Off by default because it roughly doubles the instance cost; production sets it to true."
   type        = bool
   default     = false
 }
@@ -96,12 +66,7 @@ variable "deletion_protection" {
 }
 
 variable "skip_final_snapshot" {
-  description = <<-EOT
-    True for this environment: it is destroyed and recreated constantly, the
-    schema is recreated by the application on startup, and a final snapshot on
-    every teardown would accumulate storage charges for data with no value.
-    Production is the opposite.
-  EOT
+  description = "Skip the final snapshot on deletion. True here because the schema is recreated by the application on startup; production sets it to false."
   type        = bool
   default     = true
 }

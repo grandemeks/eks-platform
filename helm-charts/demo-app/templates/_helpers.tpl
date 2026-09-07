@@ -1,7 +1,4 @@
-{{/*
-Chart name, overridable, truncated to the 63-character limit Kubernetes puts on
-label values.
-*/}}
+{{/* Truncated to the 63-character limit on label values. */}}
 {{- define "demo-app.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
@@ -10,9 +7,7 @@ label values.
 {{- default .Release.Name .Values.fullnameOverride | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
-{{/*
-Labels carried by every object in this chart.
-*/}}
+{{/* Labels on every object in this chart. */}}
 {{- define "demo-app.labels" -}}
 app.kubernetes.io/name: {{ include "demo-app.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
@@ -23,9 +18,8 @@ helm.sh/chart: {{ printf "%s-%s" .Chart.Name .Chart.Version }}
 {{- end -}}
 
 {{/*
-Selector labels are a strict subset of the above, and deliberately exclude
-version and chart. A Deployment's selector is immutable after creation, so any
-label that changes between releases must never appear here.
+A Deployment selector is immutable after creation, so no label that changes
+between releases (version, chart) may appear here.
 */}}
 {{- define "demo-app.selectorLabels" -}}
 app.kubernetes.io/name: {{ include "demo-app.name" . }}
@@ -40,11 +34,7 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end -}}
 {{- end -}}
 
-{{/*
-Image reference. Digest wins over tag when both are set: a digest identifies
-exact bytes and can be verified against a signature, whereas a tag is a pointer.
-Fails the render rather than producing a broken Deployment if neither is given.
-*/}}
+{{/* Digest wins over tag; fails the render if neither is set. */}}
 {{- define "demo-app.image" -}}
 {{- $repo := required "image.repository must be set" .Values.image.repository -}}
 {{- if .Values.image.digest -}}

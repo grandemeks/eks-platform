@@ -5,9 +5,8 @@ metadata:
   name: {{ include "demo-app.fullname" . }}
   labels:
     {{- include "demo-app.labels" . | nindent 4 }}
-    # kube-prometheus-stack only adopts ServiceMonitors carrying the release
-    # label of its own Prometheus instance. Omit it and the target is silently
-    # never scraped — no error anywhere, the metrics simply never appear.
+    # Redundant while serviceMonitorSelectorNilUsesHelmValues is false, and
+    # required the moment it is not: without it the target is silently unscraped.
     release: kube-prometheus-stack
 spec:
   selector:

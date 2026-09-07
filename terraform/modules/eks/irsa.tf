@@ -3,9 +3,8 @@ locals {
   oidc_issuer_host  = replace(aws_eks_cluster.this.identity[0].oidc[0].issuer, "https://", "")
 }
 
-# Reusable trust policy builder: allows exactly one Kubernetes service account,
-# in one namespace, in this cluster, to assume a role. The sub condition is what
-# makes this least privilege rather than "any pod in the cluster".
+# The sub condition limits this to one service account rather than any pod in
+# the cluster.
 data "aws_iam_policy_document" "vpc_cni_assume" {
   statement {
     effect  = "Allow"
@@ -76,8 +75,8 @@ resource "aws_iam_role_policy_attachment" "ebs_csi" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonEBSCSIDriverPolicy"
 }
 
-# The CSI driver creates volumes encrypted with our CMK, so it needs to use
-# the key. Grants are how KMS delegates that to a service.
+# The driver creates volumes encrypted with our CMK; grants are how KMS
+# delegates key use to the EBS service.
 data "aws_iam_policy_document" "ebs_csi_kms" {
   statement {
     effect    = "Allow"

@@ -4,7 +4,7 @@ output "endpoint" {
 }
 
 output "address" {
-  description = "Hostname only, which is what the application's DB_HOST expects."
+  description = "Hostname without the port, as the application's DB_HOST expects."
   value       = aws_db_instance.this.address
 }
 
@@ -26,10 +26,6 @@ output "engine_version" {
 }
 
 output "master_user_secret_arn" {
-  description = <<-EOT
-    ARN of the Secrets Manager secret RDS manages for the master user. This is
-    what External Secrets reads to build the Kubernetes Secret. The ARN itself
-    is not sensitive — reading it requires IAM permission and the CMK.
-  EOT
+  description = "ARN of the Secrets Manager secret RDS manages for the master user, read by External Secrets. The ARN is not sensitive; reading the secret requires IAM permission and the CMK."
   value       = aws_db_instance.this.master_user_secret[0].secret_arn
 }

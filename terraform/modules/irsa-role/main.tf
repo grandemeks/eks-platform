@@ -9,16 +9,9 @@ terraform {
   }
 }
 
-# IRSA in one reusable place.
-#
-# A Kubernetes service account presents a projected, signed token; AWS accepts
-# it because the cluster's OIDC issuer is a registered identity provider; the
-# pod receives temporary credentials. No key material exists anywhere — same
-# federation model as the GitHub Actions roles in the bootstrap layer, with the
-# cluster as issuer instead of GitHub.
-#
-# Every add-on that needs AWS access instantiates this module, so the trust
-# policy is written correctly once instead of copied four times.
+# IRSA trust policy in one place, so it is written correctly once rather than
+# copied per add-on. No key material anywhere: the service account's projected
+# token is exchanged for temporary credentials.
 
 variable "name" {
   description = "Role name."
@@ -46,27 +39,13 @@ variable "service_account" {
 }
 
 variable "policy_arns" {
-  description = <<-EOT
-    Existing policies to attach, keyed by a stable name.
-
-    A map rather than a list because for_each keys must be known at plan time,
-    and a policy ARN produced by another resource in the same apply is not.
-    With a map the key is written in configuration and only the value is
-    resolved later, which is what lets the plan proceed.
-  EOT
+  description = "Existing policies to attach, keyed by a stable name. A map, because for_each keys must be known at plan time while a policy ARN from the same apply is not."
   type        = map(string)
   default     = {}
 }
 
 variable "inline_policies" {
-  description = <<-EOT
-    Inline policy documents, keyed by a stable name.
-
-    Same reason as policy_arns: a policy built from ARNs that other modules
-    produce is not known at plan time, and count cannot depend on an unknown
-    value. With a map, the key is static and only the document is resolved
-    during apply.
-  EOT
+  description = "Inline policy documents, keyed by a stable name. A map for the same reason as policy_arns: the key stays static and only the document is resolved during apply."
   type        = map(string)
   default     = {}
 }
@@ -86,9 +65,8 @@ data "aws_iam_policy_document" "assume" {
       identifiers = [var.oidc_provider_arn]
     }
 
-    # Pins one service account in one namespace. Without this condition any pod
-    # in the cluster could assume the role — the in-cluster equivalent of the
-    # missing-sub mistake on the GitHub Actions side.
+    # Pins one service account in one namespace. Without it, any pod in the
+    # cluster could assume the role.
     condition {
       test     = "StringEquals"
       variable = "${var.oidc_issuer_host}:sub"
@@ -127,7 +105,7 @@ resource "aws_iam_role_policy" "inline" {
 }
 
 output "role_arn" {
-  description = "Goes into the eks.amazonaws.com/role-arn annotation on the service account."
+  description = "Role ARN for the eks.amazonaws.com/role-arn annotation on the service account."
   value       = aws_iam_role.this.arn
 }
 

@@ -7,19 +7,11 @@ tempo:
       wal:
         path: /var/tempo/wal
 
-  # 24 hours. A trace is an incident-response artefact: it answers "what did
-  # this request actually do", and that question is asked within hours of the
-  # request, not weeks. Metrics carry the long-term picture at a fraction of
-  # the storage cost.
+  # Traces get asked about within hours; metrics carry the long-term picture.
   retention: 24h
 
-  # The metrics generator turns spans into two things Prometheus can store:
-  # RED metrics per service, and a service graph derived from parent-child span
-  # relationships. That graph is the part worth having — it is discovered from
-  # actual traffic rather than drawn by hand, so it cannot drift from reality.
-  #
-  # Requires enableRemoteWriteReceiver on the Prometheus side; without it the
-  # generator retries silently and no service graph ever appears.
+  # Writes per-service RED metrics and the service graph to Prometheus. Needs
+  # enableRemoteWriteReceiver there or it retries forever and no graph appears.
   metricsGenerator:
     enabled: true
     remoteWriteUrl: "http://kube-prometheus-stack-prometheus.monitoring.svc.cluster.local:9090/api/v1/write"
@@ -56,7 +48,6 @@ resources:
 service:
   type: ClusterIP
 
-# The standalone query front end. Grafana talks to Tempo's own API directly, so
-# this is a second UI for data already visible in the first.
+# Grafana queries Tempo's API directly, so this front end is a second UI.
 tempoQuery:
   enabled: false

@@ -4,11 +4,7 @@ variable "name" {
 }
 
 variable "kubernetes_version" {
-  description = <<-EOT
-    Kubernetes minor version. Deliberately one release behind the newest:
-    new enough to stay well inside standard support, old enough that the
-    ecosystem has caught up.
-  EOT
+  description = "Kubernetes minor version. Kept one release behind the newest so the surrounding ecosystem has caught up, while staying inside standard support."
   type        = string
   default     = "1.35"
 }
@@ -29,22 +25,13 @@ variable "kms_key_arn" {
 }
 
 variable "public_access_cidrs" {
-  description = <<-EOT
-    CIDRs allowed to reach the public Kubernetes API endpoint.
-    Defaults to the whole internet so CI and a changing home IP both work;
-    a production cluster narrows this to known ranges or drops public
-    access entirely in favour of a VPN or bastion.
-  EOT
+  description = "CIDRs allowed to reach the public Kubernetes API endpoint. Open by default so CI and a changing home IP both work; a production cluster should narrow this."
   type        = list(string)
   default     = ["0.0.0.0/0"]
 }
 
 variable "enabled_cluster_log_types" {
-  description = <<-EOT
-    Control plane logs shipped to CloudWatch. The audit log is the one that
-    matters for a regulated environment: it records every API call made
-    against the cluster, by whom, and whether it was allowed.
-  EOT
+  description = "Control plane log types shipped to CloudWatch. The audit log records every API call against the cluster, by whom, and whether it was allowed."
   type        = list(string)
   default     = ["api", "audit", "authenticator"]
 }
@@ -62,31 +49,19 @@ variable "tags" {
 }
 
 variable "cluster_admin_principal_arns" {
-  description = <<-EOT
-    IAM principals granted cluster-admin. Every administrator is an explicit
-    resource here rather than an implicit side effect of who ran apply first.
-  EOT
+  description = "IAM principals granted cluster-admin, each created as an explicit access entry."
   type        = list(string)
   default     = []
 }
 
 variable "node_instance_types" {
-  description = <<-EOT
-    Instance types for the managed node group. t3.large rather than t3.medium:
-    the observability stack alone needs roughly 4.5 GB across Prometheus,
-    Grafana, Loki and Argo CD, which leaves a t3.medium pair with no headroom
-    and turns any spike into an OOM kill during a live demo. The extra cost is
-    about $0.10/hour for the pair.
-  EOT
+  description = "Instance types for the managed node group. The observability stack and Argo CD need roughly 4.5 GB, which leaves a pair of t3.medium nodes without headroom."
   type        = list(string)
   default     = ["t3.large"]
 }
 
 variable "node_capacity_type" {
-  description = <<-EOT
-    ON_DEMAND or SPOT. Spot would cut compute cost by roughly 70%, but a
-    reclaimed node mid-interview is not a trade worth making for a few dollars.
-  EOT
+  description = "ON_DEMAND or SPOT. Spot is roughly 70 percent cheaper but nodes can be reclaimed at any time."
   type        = string
   default     = "ON_DEMAND"
 }

@@ -7,8 +7,7 @@ metadata:
 spec:
   replicas: {{ .Values.replicaCount }}
 
-  # maxUnavailable: 0 means a new pod must be Ready before an old one goes
-  # away, so capacity never dips below replicaCount during a rollout.
+  # maxUnavailable: 0 keeps capacity at replicaCount through a rollout.
   strategy:
     type: RollingUpdate
     rollingUpdate:
@@ -24,22 +23,18 @@ spec:
       labels:
         {{- include "demo-app.labels" . | nindent 8 }}
       annotations:
-        # Rolls the pods whenever the database secret changes. Without this, a
-        # rotated credential sits in the Secret while the running pods keep
-        # using the old value from their environment, and the application only
-        # picks it up at the next unrelated restart.
+        # Env is read once at start, so a rotated credential needs a pod roll.
         checksum/db-secret: {{ printf "%s-%s" .Values.externalSecret.remoteSecretName (.Values.image.digest | default .Values.image.tag) | sha256sum }}
     spec:
       serviceAccountName: {{ include "demo-app.serviceAccountName" . }}
 
-      # This workload makes no Kubernetes API calls, so it has no use for a
-      # projected service account token.
+      # No Kubernetes API calls from this workload.
       automountServiceAccountToken: false
 
       terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
 
-      # Preferred rather than required: with two nodes and two replicas, a
-      # required constraint would leave a pod Pending during node replacement.
+      # ScheduleAnyway, not DoNotSchedule: with 2 nodes and 2 replicas the strict
+      # form leaves a pod Pending during node replacement.
       topologySpreadConstraints:
         - maxSkew: 1
           topologyKey: kubernetes.io/hostname
@@ -78,10 +73,7 @@ spec:
             - name: APP_VERSION
               value: {{ .Values.image.tag | default .Chart.AppVersion | quote }}
             {{- if .Values.externalSecret.enabled }}
-            # Connection details are not sensitive and come from values. Keeping
-            # them out of the Secret means the Secret holds exactly one thing
-            # worth protecting, and a change of host is a values change rather
-            # than a credential rotation.
+            # Not sensitive, so a host change is a values change, not a rotation.
             - name: DB_HOST
               value: {{ required "database.host must be set" .Values.database.host | quote }}
             - name: DB_PORT
@@ -91,8 +83,7 @@ spec:
             - name: DB_SSLMODE
               value: {{ .Values.database.sslMode | quote }}
 
-            # Only the credential comes from the Secret that External Secrets
-            # syncs out of Secrets Manager.
+            # Credential only, synced from Secrets Manager by External Secrets.
             - name: DB_USER
               valueFrom:
                 secretKeyRef:
@@ -111,25 +102,21 @@ spec:
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
 
-          # Liveness deliberately does not touch the database: if it did, a
-          # database outage would restart every replica and turn a recoverable
-          # dependency failure into a self-inflicted one.
+          # /healthz must not touch the database, or an outage restarts every replica.
           livenessProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 10
             timeoutSeconds: 2
             failureThreshold: 3
 
-          # Readiness does check it, so an affected pod leaves the load
-          # balancer without being killed and rejoins on its own.
+          # /readyz does check it, so the pod leaves the ALB without being killed.
           readinessProbe:
             httpGet: { path: /readyz, port: http }
             periodSeconds: 5
             timeoutSeconds: 2
             failureThreshold: 2
 
-          # Holds liveness off until startup completes, so slow starts under
-          # load are not mistaken for a hung process.
+          # 30s of startup budget before liveness applies.
           startupProbe:
             httpGet: { path: /healthz, port: http }
             periodSeconds: 2

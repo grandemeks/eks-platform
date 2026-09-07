@@ -1,15 +1,11 @@
 variable "app_hostname" {
-  description = "Fully qualified hostname the demo application runs on"
+  description = "Fully qualified hostname the demo application is served on."
   type        = string
   default     = "incode-demo.grandemeks.tech"
 }
 
 variable "additional_hostnames" {
-  description = <<-EOT
-    Extra names on the same certificate. Grafana shares app's load
-    balancer through the ALB group annotation, so it needs to be on the same
-    certificate - single ALB and Certificate rather than two of each.
-  EOT
+  description = "Extra names on the same certificate. Grafana shares the application's load balancer through the ALB group annotation, so it has to appear here."
   type        = list(string)
   default     = ["grafana.incode-demo.grandemeks.tech"]
 }
@@ -19,9 +15,8 @@ resource "aws_acm_certificate" "app" {
   subject_alternative_names = var.additional_hostnames
   validation_method         = "DNS"
 
-  # ACM cannot modify a certificate in place, so adding a name means issuing a
-  # new one. Creating the replacement first keeps the old certificate attached
-  # to the load balancer until the new one is ready.
+  # Adding a SAN reissues the certificate. Create the replacement before the old
+  # one is detached from the load balancer.
   lifecycle {
     create_before_destroy = true
   }
@@ -29,9 +24,8 @@ resource "aws_acm_certificate" "app" {
   tags = { Name = var.app_hostname }
 }
 
-# ACM asks for a CNAME per name to prove control of the domain. Because the
-# zone is in this account, Terraform writes them automatically — the whole
-# chain from request to issued certificate is code, with no console step.
+# The zone is in this account, so the validation CNAMEs are written here rather
+# than by hand in the console.
 resource "aws_route53_record" "acm_validation" {
   for_each = {
     for dvo in aws_acm_certificate.app.domain_validation_options :
@@ -48,14 +42,12 @@ resource "aws_route53_record" "acm_validation" {
   records = [each.value.record]
   ttl     = 60
 
-  # Both names validate into the same zone and can produce identical records
-  # when they share a parent, so overwriting is expected rather than a conflict.
+  # Both names share a parent zone and can emit an identical validation record.
   allow_overwrite = true
 }
 
-# Blocks until ACM has actually issued the certificate. Without this, a load
-# balancer could reference one still in PENDING_VALIDATION and the apply would
-# fail with an error that points nowhere useful.
+# Blocks until ACM issues. Without it a listener can reference a certificate
+# still in PENDING_VALIDATION.
 resource "aws_acm_certificate_validation" "app" {
   certificate_arn         = aws_acm_certificate.app.arn
   validation_record_fqdns = [for r in aws_route53_record.acm_validation : r.fqdn]

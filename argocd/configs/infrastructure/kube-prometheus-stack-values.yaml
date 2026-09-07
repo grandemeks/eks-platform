@@ -1,38 +1,26 @@
-# Sized for two t3.large nodes. Every request here was chosen against what is
-# actually available rather than copied from the chart defaults, which assume a
-# far larger cluster.
+# Sized for two t3.large nodes, not the chart defaults.
 
 fullnameOverride: kube-prometheus-stack
 
 # --- Prometheus ---------------------------------------------------------------
 prometheus:
   prometheusSpec:
-    # Seven days on 20 GB. Long enough for the 3-day burn-rate window below to
-    # have data, short enough to stay cheap. Long-term storage would be Thanos
-    # or Mimir writing to S3; that is a different problem and not this one.
+    # 7d because the 3d burn-rate window needs data. Longer means Thanos or Mimir on S3.
     retention: 7d
     retentionSize: 18GB
 
-    # Without these two set to false, the operator only picks up ServiceMonitors
-    # and rules carrying its own release label. That default is a footgun: the
-    # target is silently never scraped and nothing anywhere reports an error.
-    # Turning it off means any ServiceMonitor in the cluster is honoured, which
-    # is what makes a chart able to ship its own monitoring.
+    # At the default true, the operator only adopts ServiceMonitors and rules carrying
+    # its own release label, and reports nothing about the ones it skips.
     serviceMonitorSelectorNilUsesHelmValues: false
     ruleSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
     probeSelectorNilUsesHelmValues: false
 
-    # Exemplars link a histogram observation to the trace that produced it.
-    # Enabled now so the storage is in place; the tracing backend that fills
-    # them is a later addition.
+    # Storage for the histogram exemplars the app emits; Grafana links them into Tempo.
     enableFeatures:
       - exemplar-storage
-    # Tempo's metrics generator writes span-derived RED metrics and the service
-    # graph here over remote write. Prometheus rejects those writes unless the
-    # receiver is explicitly enabled, and it does so silently from Tempo's
-    # point of view — the generator retries, no service graph ever appears, and
-    # nothing in Grafana suggests why.
+    # Tempo's generator remote-writes span metrics and the service graph here.
+    # Without this it retries forever and no service graph appears.
     enableRemoteWriteReceiver: true
 
     resources:
@@ -71,8 +59,7 @@ alertmanager:
 
   config:
     route:
-      # Group by alert and service so a single incident produces one
-      # notification rather than one per pod.
+      # One notification per incident, not one per pod.
       groupBy: ["alertname", "service"]
       groupWait: 30s
       groupInterval: 5m
@@ -80,10 +67,7 @@ alertmanager:
       receiver: default
 
       routes:
-        # Burn-rate alerts arrive with a severity label. Pages repeat hourly;
-        # tickets are informational and repeat once a day. Routing on severity
-        # rather than on alert name means new alerts inherit the behaviour
-        # without touching this config.
+        # Matched on severity, not alert name, so new alerts inherit the routing.
         - matchers: ["severity = critical"]
           receiver: pager
           repeatInterval: 1h
@@ -92,50 +76,30 @@ alertmanager:
           repeatInterval: 24h
 
     receivers:
-      # Both are null receivers in this environment. In production these are
-      # PagerDuty and Slack; the routing tree above is the part that matters
-      # and it is already correct.
+      # Null receivers here; PagerDuty and Slack in production. The routing
+      # tree above is the part being exercised.
       - name: default
       - name: pager
 
     inhibitRules:
-      # A critical burn-rate alert suppresses the warning for the same service.
-      # Without this, one incident produces two notifications saying the same
-      # thing at different urgencies.
+      # One incident would otherwise page and ticket for the same service.
       - sourceMatchers: ["severity = critical"]
         targetMatchers: ["severity = warning"]
         equal: ["service"]
 
 # --- Grafana ------------------------------------------------------------------
 grafana:
-  # The admin credential comes from Secrets Manager through External Secrets,
-  # by exactly the route the database credential takes. Terraform generates it
-  # once and stores it; nothing about it is in Git.
-  #
-  # The alternative the chart offers — leaving adminPassword unset — does not
-  # work under GitOps. The chart generates the password with randAlphaNum, which
-  # returns a new value on every render, and Argo CD renders on every sync. So
-  # the Secret was rewritten each sync, the pod template's checksum over that
-  # Secret restarted Grafana each sync, and Grafana — which keeps its admin
-  # password in its own database and will not overwrite an existing admin user
-  # from the environment — went on accepting only the password from the very
-  # first install. Nobody could log in with the value in the Secret, and
-  # Grafana's own sidecars were answered 401 when they called the provisioning
-  # reload API.
+  # From Secrets Manager. Leaving adminPassword unset has the chart call randAlphaNum
+  # on every Argo render, while Grafana keeps the first-install password in its own
+  # database: the Secret churns, Grafana restarts, and nobody can log in.
   admin:
     existingSecret: grafana-admin
     userKey: admin-user
     passwordKey: admin-password
 
-  # SecretStore, ExternalSecret and the service account that carries the AWS
-  # identity. The demo-app chart ships the same three objects for the database
-  # credential; here they go through extraObjects because the chart is upstream
-  # and cannot be given templates of ours.
+  # Upstream chart, so the SecretStore/ExternalSecret/ServiceAccount trio goes here.
   extraObjects:
-    # This service account exists only to be impersonated by External Secrets.
-    # Grafana's own service account carries no AWS identity, so a compromised
-    # Grafana pod cannot reach Secrets Manager even though a secret-reading
-    # identity exists in the same namespace.
+    # Only External Secrets uses this. Grafana's own SA carries no AWS identity.
     - apiVersion: v1
       kind: ServiceAccount
       metadata:
@@ -143,8 +107,7 @@ grafana:
         annotations:
           eks.amazonaws.com/role-arn: arn:aws:iam::385291933614:role/eks-platform-dev-grafana-secrets
 
-    # Namespaced, not a ClusterSecretStore: this AWS identity is reachable only
-    # from the monitoring namespace.
+    # Namespaced, not ClusterSecretStore: reachable only from monitoring.
     - apiVersion: external-secrets.io/v1
       kind: SecretStore
       metadata:
@@ -171,9 +134,7 @@ grafana:
         target:
           name: grafana-admin
           creationPolicy: Owner
-        # Referenced by name, not ARN. This secret is created by Terraform
-        # rather than by RDS, so its name has no random suffix and survives a
-        # destroy/apply — which is why it needs no entry in sync-values.sh.
+        # Name, not ARN: Terraform creates this one, so there is no random suffix.
         data:
           - secretKey: admin-user
             remoteRef:
@@ -196,10 +157,7 @@ grafana:
     limits:
       memory: 384Mi
 
-  # The sidecar watches for ConfigMaps labelled grafana_dashboard and loads
-  # them. That is what lets the application chart ship its own dashboard
-  # instead of the dashboard living somewhere else and drifting from the
-  # metrics it draws.
+  # Lets the app chart ship its dashboard as a labelled ConfigMap.
   sidecar:
     dashboards:
       enabled: true
@@ -208,19 +166,11 @@ grafana:
     datasources:
       enabled: true
 
-      # The metric-to-trace direction of correlation, and the one that is
-      # easiest to leave half-finished: the application attaches exemplars,
-      # Prometheus stores them, Grafana draws them as dots on the latency
-      # panel — and clicking one does nothing, because Grafana does not know
-      # which datasource the trace_id belongs to. This is what turns the dot
-      # into a link into Tempo.
-      #
-      # Applies to the Prometheus datasource the chart creates itself, which is
-      # why it is set here rather than under additionalDataSources.
+      # Makes the exemplar dots clickable into Tempo. Applies to the Prometheus
+      # datasource the chart creates, so it cannot live under additionalDataSources.
       exemplarTraceIdDestinations:
         datasourceUid: tempo
-        # Must match the exemplar label the application emits, which is
-        # trace_id — not Grafana's default of traceID.
+        # Must match the label the app emits (trace_id), not Grafana's default traceID.
         traceIdLabelName: trace_id
         urlDisplayLabel: View trace
 
@@ -243,16 +193,13 @@ grafana:
       alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-central-1:385291933614:certificate/19d20204-58a8-4fb6-b70c-049295d1a4bb
       alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
       alb.ingress.kubernetes.io/healthcheck-path: /api/health
-      # Same group as the application, so both share one load balancer instead
-      # of provisioning a second at $0.023/hour.
+      # Same ALB as the app via IngressGroup, instead of a second at $0.023/h.
       alb.ingress.kubernetes.io/group.name: eks-platform-dev
       external-dns.alpha.kubernetes.io/hostname: grafana.incode-demo.grandemeks.tech
     hosts:
       - grafana.incode-demo.grandemeks.tech
       
-  # Provisioned as configuration rather than clicked into the UI. A datasource
-  # created by hand lives only in Grafana's database, so it disappears with the
-  # volume and has to be recreated from memory after every teardown.
+  # Provisioned, not clicked in: a hand-made datasource dies with the volume.
   additionalDataSources:
     - name: Loki
       type: loki
@@ -260,19 +207,9 @@ grafana:
       access: proxy
       url: http://loki.monitoring.svc.cluster.local:3100
       jsonData:
-        # Turns a trace_id in a log line into a link that opens the trace.
-        # This is the log-to-trace direction of correlation.
-        #
-        # A regex over the log line, not matcherType: label. The label variant
-        # only matches stream labels and structured metadata, and trace_id is
-        # neither: the filelog receiver ships each container line as an opaque
-        # string after CRI parsing, so the application's JSON stays inside the
-        # body and never becomes an attribute. Loki confirms it — no trace_id
-        # label exists in the store — so the link matched nothing and rendered
-        # nowhere.
-        #
-        # Capture group 1 is the value. 32 hex characters is a W3C trace ID,
-        # which keeps this from matching a truncated or empty field.
+        # Log-to-trace link. Regex over the line, not matcherType: label: the filelog
+        # receiver ships each CRI line as an opaque string, so the app's JSON trace_id
+        # never becomes a label. 32 hex chars is a W3C ID and skips truncated fields.
         derivedFields:
           - name: TraceID
             matcherType: regex
@@ -284,14 +221,10 @@ grafana:
       type: tempo
       uid: tempo
       access: proxy
-      # 3200, not 3100. Tempo serves its query API on 3200; 3100 is Loki's
-      # port and is not open on the Tempo service at all, so this datasource
-      # answered every query with a connection error — including the ones
-      # arriving from an exemplar link or a log line's derived field.
+      # 3200, not 3100. 3100 is Loki's port and is not open on the Tempo service.
       url: http://tempo.monitoring.svc.cluster.local:3200
       jsonData:
-        # Trace to logs: from a span, jump to the logs that pod emitted in the
-        # same window, already filtered to the right namespace and pod.
+        # Span to that pod's logs in the same window.
         tracesToLogsV2:
           datasourceUid: loki
           spanStartTimeShift: "-5m"
@@ -301,8 +234,7 @@ grafana:
               value: service_name
           filterByTraceID: true
 
-        # Trace to metrics: from a span, jump to the RED metrics for that
-        # service. Tempo's own generator produces these.
+        # Span to the RED metrics Tempo's generator writes.
         tracesToMetrics:
           datasourceUid: prometheus
           spanStartTimeShift: "-5m"
@@ -311,8 +243,7 @@ grafana:
             - key: service.name
               value: service
 
-        # The service graph, drawn from parent-child span relationships rather
-        # than from a diagram someone maintains by hand.
+        # Service graph, derived from span parent-child edges.
         serviceMap:
           datasourceUid: prometheus
 
@@ -349,9 +280,8 @@ prometheusOperator:
       memory: 256Mi
 
 # --- Components EKS does not expose -------------------------------------------
-# The control plane is managed by AWS, so these components have no endpoints to
-# scrape. Left enabled, each produces a permanently firing "target down" alert
-# that trains everyone to ignore alerts - which is worse than not having them.
+# AWS manages the control plane, so these have no endpoints. Left enabled, each
+# fires a permanent "target down".
 kubeApiServer:
   enabled: true
 kubeControllerManager:

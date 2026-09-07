@@ -16,19 +16,15 @@ resource "aws_iam_role" "node" {
   tags               = var.tags
 }
 
-# Two policies only. Notably absent is AmazonEKS_CNI_Policy: the VPC CNI runs
-# with its own IRSA role instead, so the permission to manipulate ENIs and IP
-# addresses belongs to that one add-on rather than to every process on
-# every node.
+# No AmazonEKS_CNI_Policy here: the VPC CNI has its own IRSA role, so ENI and
+# IP permissions do not belong to every process on every node.
 resource "aws_iam_role_policy_attachment" "node_worker" {
   role       = aws_iam_role.node.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy"
 }
 
-# PullOnly rather than ReadOnly: it is the narrower of the two and is what AWS
-# now documents for node roles. ReadOnly additionally allows listing images,
-# reading lifecycle policies and reading scan findings, none of which a kubelet
-# needs in order to pull an image.
+# PullOnly, not ReadOnly: a kubelet does not need to list images or read
+# lifecycle policies and scan findings.
 resource "aws_iam_role_policy_attachment" "node_ecr" {
   role       = aws_iam_role.node.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
@@ -44,7 +40,7 @@ resource "aws_eks_node_group" "this" {
   capacity_type  = var.node_capacity_type
   disk_size      = var.node_disk_size
 
-  # AL2023 is the current default. Amazon Linux 2 is end of life.
+  # Amazon Linux 2 is end of life.
   ami_type = "AL2023_x86_64_STANDARD"
 
   scaling_config {
@@ -54,13 +50,13 @@ resource "aws_eks_node_group" "this" {
   }
 
   update_config {
-    # With two nodes, replacing one at a time keeps half the capacity online
-    # through a version upgrade.
+    # Two nodes, so one at a time keeps half the capacity online through an
+    # upgrade.
     max_unavailable = 1
   }
 
-  # Networking must be functional before nodes join, or the kubelet registers
-  # and then sits unready because no pod can get an IP address.
+  # Without networking the kubelet registers and then sits unready, because no
+  # pod can get an IP.
   depends_on = [
     aws_iam_role_policy_attachment.node_worker,
     aws_iam_role_policy_attachment.node_ecr,
@@ -69,8 +65,7 @@ resource "aws_eks_node_group" "this" {
   ]
 
   lifecycle {
-    # A cluster autoscaler or Karpenter would own desired_size at runtime.
-    # Not enabled here, but this is where that boundary is drawn.
+    # An autoscaler or Karpenter owns desired_size at runtime.
     ignore_changes = [scaling_config[0].desired_size]
   }
 

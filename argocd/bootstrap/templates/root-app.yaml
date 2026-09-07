@@ -3,9 +3,7 @@ kind: Application
 metadata:
   name: root
   namespace: {{ .Values.destination.namespace }}
-  # Terraform owns this object. Without the finalizer, deleting the Application
-  # would orphan every child Application and leave the cluster full of
-  # resources nothing manages.
+  # Without the finalizer, deleting this orphans every child Application.
   finalizers:
     - resources-finalizer.argocd.argoproj.io
 spec:
@@ -16,8 +14,7 @@ spec:
     targetRevision: {{ .Values.targetRevision | quote }}
     path: {{ .Values.path | quote }}
     directory:
-      # Child Applications are grouped in subdirectories (infrastructure/ and
-      # the application itself), so the scan has to descend into them.
+      # Child Applications live in subdirectories.
       recurse: true
 
   destination:
@@ -26,18 +23,14 @@ spec:
 
   syncPolicy:
     automated:
-      # Delete resources removed from Git. Without prune, a component deleted
-      # from the repository keeps running and Git stops being the source of
-      # truth.
+      # Without prune, a component deleted from Git keeps running.
       prune: true
-      # Revert manual kubectl edits. This is what makes "the repository is the
-      # desired state" true rather than aspirational.
+      # Reverts manual kubectl edits.
       selfHeal: true
 
     syncOptions:
       - CreateNamespace=true
-      # Server-side apply, so large CRDs do not hit the annotation size limit
-      # that client-side apply runs into with the Prometheus operator.
+      # The Prometheus operator CRDs exceed the client-side apply annotation limit.
       - ServerSideApply=true
 
     retry:

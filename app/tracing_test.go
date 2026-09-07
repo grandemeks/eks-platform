@@ -8,14 +8,9 @@ import (
 	"time"
 )
 
-// TestInitTracingExportsToSignalPath pins down the one thing about the exporter
-// that cannot be observed from outside the process: which URL it posts to.
-//
-// OTEL_EXPORTER_OTLP_ENDPOINT is a base URL, so http://host:4318 has to become
-// http://host:4318/v1/traces. Getting this wrong is invisible in every other
-// signal — the application stays healthy, spans are created, trace IDs are
-// returned to callers and attached to exemplars — and only the collector knows,
-// by answering 404 to every batch.
+// TestInitTracingExportsToSignalPath pins the export URL: a base endpoint has
+// to become <base>/v1/traces. Getting it wrong shows up nowhere but the
+// collector's 404s.
 func TestInitTracingExportsToSignalPath(t *testing.T) {
 	paths := make(chan string, 1)
 
@@ -43,7 +38,7 @@ func TestInitTracingExportsToSignalPath(t *testing.T) {
 	_, span := tracer.Start(ctx, "test")
 	span.End()
 
-	// Shutdown flushes the batcher, so the export happens before this returns.
+	// Shutdown flushes the batcher, so the export lands before this returns.
 	flushCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if err := shutdown(flushCtx); err != nil {
@@ -60,9 +55,8 @@ func TestInitTracingExportsToSignalPath(t *testing.T) {
 	}
 }
 
-// TestInitTracingDisabledWithoutEndpoint covers the local-development path: no
-// endpoint configured means a no-op shutdown and no error, so the same binary
-// runs against a Postgres container with no collector in sight.
+// TestInitTracingDisabledWithoutEndpoint covers local development: no endpoint
+// means a no-op shutdown and no error.
 func TestInitTracingDisabledWithoutEndpoint(t *testing.T) {
 	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
 

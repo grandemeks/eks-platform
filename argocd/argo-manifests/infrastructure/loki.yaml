@@ -4,9 +4,7 @@ metadata:
   name: loki
   namespace: argocd
   annotations:
-    # Wave 1, alongside the metrics stack. The collector in wave 1 exports to
-    # it, and a collector whose exporter target does not resolve drops logs
-    # rather than queueing them indefinitely.
+    # Wave 1 with the metrics stack; the collector in the same wave exports to it.
     argocd.argoproj.io/sync-wave: "1"
   finalizers:
     - resources-finalizer.argocd.argoproj.io

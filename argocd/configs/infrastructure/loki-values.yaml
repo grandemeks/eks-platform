@@ -1,24 +1,13 @@
-# Single binary, filesystem storage.
-#
-# Loki's default deployment mode splits read, write and backend into separate
-# StatefulSets with a shared object store — correct at scale, and roughly six
-# times the footprint of what two t3.large nodes have spare. SingleBinary runs
-# every component in one process against a local volume.
-#
-# The production version is the distributed mode writing chunks to S3 with a
-# lifecycle policy, which is a configuration change rather than a redesign:
-# the query API and the log format are identical.
+# Single binary on a local volume. The default split read/write/backend mode is
+# roughly six times the footprint two t3.large nodes have spare; moving to it plus
+# S3 is a values change, not a redesign.
 deploymentMode: SingleBinary
 
 loki:
-  # No multi-tenancy. With auth enabled every write and query must carry an
-  # X-Scope-OrgID header, which means configuring it in the collector and in
-  # the Grafana datasource for a single-tenant cluster that has no tenants to
-  # separate.
+  # Enabling this requires an X-Scope-OrgID header on every write and query.
   auth_enabled: false
 
   commonConfig:
-    # One replica, so nothing to replicate to.
     replication_factor: 1
 
   storage:
@@ -26,9 +15,7 @@ loki:
 
   schemaConfig:
     configs:
-      # TSDB with the v13 schema. Older schemas still work but TSDB is what
-      # Loki 3.x optimises for, and starting on the current one avoids a schema
-      # migration that has to be scheduled at a period boundary.
+      # Current schema, so no migration to schedule at a period boundary later.
       - from: "2024-04-01"
         store: tsdb
         object_store: filesystem
@@ -38,28 +25,21 @@ loki:
           period: 24h
 
   limits_config:
-    # OTLP carries structured metadata — trace IDs, span IDs, resource
-    # attributes — as fields rather than as part of the log line. The default
-    # cap is small enough that a span-heavy log entry gets rejected.
+    # Default cap rejects OTLP entries carrying trace/span IDs and resource attributes.
     max_structured_metadata_size: 256KB
     per_stream_rate_limit: 512KB
     per_stream_rate_limit_burst: 1MB
 
-    # Seven days, matching Prometheus. An SLO alert that fires on a 3-day
-    # window is useless if the logs from that window are already gone.
+    # Matches Prometheus. The 3d burn-rate alert needs logs from that window.
     retention_period: 168h
 
-    # Rejects entries older than this rather than accepting them into a stream
-    # whose ordering is already settled.
     reject_old_samples: true
     reject_old_samples_max_age: 24h
 
   compactor:
     working_directory: /var/loki/compactor
     delete_request_store: filesystem
-    # Retention is only enforced when the compactor is told to enforce it.
-    # Without this, retention_period above is documentation rather than policy
-    # and the volume fills.
+    # Without this, retention_period above is not enforced and the volume fills.
     retention_enabled: true
 
 singleBinary:
@@ -75,8 +55,7 @@ singleBinary:
     limits:
       memory: 768Mi
 
-# Every other deployment mode explicitly off. The chart provisions these by
-# default and they would sit Pending forever on a two-node cluster.
+# The chart provisions these by default; on two nodes they sit Pending forever.
 read:
   replicas: 0
 write:
@@ -89,9 +68,7 @@ chunksCache:
 resultsCache:
   enabled: false
 
-# The chart deploys a canary that writes and reads a synthetic log line to
-# prove the pipeline works end to end. Genuinely useful in production; on this
-# cluster it is another pod for a pipeline that is exercised by real traffic.
+# Synthetic write/read probe. Worth it in production; here real traffic covers it.
 lokiCanary:
   enabled: false
 
@@ -99,9 +76,7 @@ test:
   enabled: false
 
 gateway:
-  # An nginx front end that routes read and write paths to the right
-  # components. In SingleBinary mode there is only one component, so it is a
-  # proxy in front of itself.
+  # In SingleBinary mode there is one component, so the gateway proxies to itself.
   enabled: false
 
 monitoring:

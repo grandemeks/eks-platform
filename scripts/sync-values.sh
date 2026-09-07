@@ -1,23 +1,11 @@
 #!/usr/bin/env bash
 #
-# Copy Terraform outputs into the Argo CD values files.
+# Copy Terraform outputs into the Argo CD values files. Run after terraform
+# apply, review the diff, commit.
 #
-# Seven values in this repository are produced by Terraform and consumed by
-# Kubernetes, and most of them change every time the environment is recreated:
-#
-#   database endpoint      new RDS instance
-#   database secret ARN    RDS generates a fresh Secrets Manager secret
-#   VPC id                 new VPC
-#   IRSA role ARNs         new cluster means a new OIDC provider
-#   ACM certificate ARN    stable; it lives in the bootstrap layer
-#
-# Terraform cannot write them itself: Argo CD reads desired state from Git, not
-# from Terraform state, and Terraform has no business committing to the
-# repository. So a manual copying step exists — and a manual copying step
-# performed after every destroy/apply cycle is a defect waiting to happen.
-# Three separate failures during development traced back to a stale ARN here.
-#
-# Run after terraform apply, review the diff, commit.
+# Argo reads desired state from Git, not Terraform state, so these values have
+# to be copied across. Everything except the ACM certificate ARN changes on a
+# rebuild: new RDS secret, new VPC, new OIDC provider behind the IRSA roles.
 
 set -euo pipefail
 
@@ -45,12 +33,11 @@ ROLE_DNS="$(tf_output "$ENV_DIR" irsa_external_dns_role_arn)"
 ROLE_GRAFANA="$(tf_output "$ENV_DIR" irsa_grafana_secrets_role_arn)"
 CERT_ARN="$(tf_output "$BOOTSTRAP_DIR" acm_certificate_arn)"
 
-# The endpoint output is host:port; the chart keeps them as separate values so
-# a port change is not a string-parsing exercise.
+# The output is host:port; the chart wants host and port separately.
 DB_HOST="${DB_ENDPOINT%%:*}"
 
-# Fail loudly rather than writing an empty string into a values file, which
-# would produce a Helm render error far from its cause.
+# Fail here: an empty value written to a values file surfaces as a Helm render
+# error far from its cause.
 for pair in "database_endpoint=$DB_ENDPOINT" \
             "database_secret_arn=$DB_SECRET_ARN" \
             "vpc_id=$VPC_ID" \
@@ -67,16 +54,9 @@ for pair in "database_endpoint=$DB_ENDPOINT" \
   printf '    %-26s %s\n' "$name" "$value"
 done
 
-# Rewrite one key in place, anchored to its parent section.
-#
-# A targeted line rewrite rather than a round-trip through yq: every one of
-# these files carries comments explaining why a value is what it is, and a
-# YAML round-trip discards them silently. The comments are the documentation.
-#
-# The section anchor matters. demo-app values contains two keys named "host" —
-# database.host and ingress.host — and matching the key alone rewrites
-# whichever appears first. That works until someone reorders the file, at which
-# point the application quietly points at the wrong hostname.
+# Rewrite one key in place. Line rewrite, not a yq round-trip: that would strip
+# the comments in these files. Section-anchored because demo-app values has two
+# keys named `host` and matching the key alone hits whichever comes first.
 set_yaml_value() {
   local file="$1" section="$2" key="$3" value="$4" quote="${5:-yes}"
   python3 - "$file" "$section" "$key" "$value" "$quote" <<'PYEOF'
@@ -119,9 +99,8 @@ set_yaml_value "$DNS_VALUES" serviceAccount eks.amazonaws.com/role-arn "$ROLE_DN
 
 log "Updating $(basename "$GRAFANA_VALUES")"
 set_yaml_value "$GRAFANA_VALUES" grafana alb.ingress.kubernetes.io/certificate-arn "$CERT_ARN" no
-# The service account External Secrets impersonates to read Grafana's admin
-# credential. The secret it reads is referenced by name, not ARN, so unlike the
-# database credential there is nothing else here to sync.
+# Role only: Grafana's admin secret is referenced by name, not ARN, so unlike
+# the database credential there is no second value to sync here.
 set_yaml_value "$GRAFANA_VALUES" grafana eks.amazonaws.com/role-arn "$ROLE_GRAFANA" no
 
 log "Verifying the files still parse"

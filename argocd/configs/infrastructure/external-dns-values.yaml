@@ -5,60 +5,30 @@ serviceAccount:
   create: true
   name: external-dns
   annotations:
-    # Scoped to one hosted zone: ChangeResourceRecordSets is allowed only on
-    # the delegated subdomain. The apex domain is not in this account at all.
+    # Role allows ChangeResourceRecordSets on the delegated zone only.
     eks.amazonaws.com/role-arn: arn:aws:iam::385291933614:role/eks-platform-dev-external-dns
 
-# Only manage records inside the delegated subdomain, even if the role
-# somehow had wider access. Defence in depth: the IAM policy is the boundary,
-# this is the guard rail in front of it.
+# Guard rail in front of the IAM policy, which is the real boundary.
 domainFilters:
   - incode-demo.grandemeks.tech
 
-# sync, not upsert-only. upsert-only never deletes a record, so a removed
-# Ingress leaves a Route53 entry pointing at a load balancer that no longer
-# exists — and the next environment to claim that name inherits a stale record.
+# sync, not upsert-only: upsert-only never deletes, so a removed Ingress leaves
+# a record pointing at a dead ALB for the next environment to inherit.
 policy: sync
 
-# Ownership records carry this ID, so external-dns only ever modifies records
-# it created. Another tool, or a hand-made record, is left alone.
+# external-dns only touches records whose ownership TXT carries this ID.
 txtOwnerId: eks-platform-dev
 
-# The ownership record for the application's hostname has to live inside the
-# delegated zone, and by default it does not.
-#
-# The TXT registry names its ownership record by prefixing the record type onto
-# the first label: grafana.incode-demo.grandemeks.tech becomes
-# cname-grafana.incode-demo.grandemeks.tech, which is inside the zone and works.
-# But the application sits on the zone apex, so incode-demo.grandemeks.tech
-# becomes cname-incode-demo.grandemeks.tech — a sibling under grandemeks.tech,
-# which is registrar-hosted and not delegated here. domainFilters drops it.
-#
-# The consequence is not a visible error. external-dns creates the A and AAAA
-# records for the apex quite happily, silently skips the ownership TXT, and from
-# then on does not recognise the records as its own. It will never correct them.
-# So after a destroy/apply the apex keeps pointing at the previous ALB, which no
-# longer exists, and the hostname stops resolving — while the logs say "All
-# records are already up to date" every minute.
-#
-# Ending the prefix in a period turns the ownership record into a subdomain
-# instead of a sibling: a-.incode-demo.grandemeks.tech. That is inside the zone
-# for the apex and for every subdomain, so one setting covers both. This is the
-# form the external-dns TXT registry documentation prescribes for apex records —
-# the %{record_type} substitution is required, since one name can carry both an
-# A and an AAAA record and they need distinct ownership records.
-#
-# Not changeable in place: external-dns looks for ownership under the new name
-# only, so records registered under the old prefix are orphaned and become
-# unowned. Changing this requires deleting the old TXT records and the A/AAAA
-# records they described, so external-dns recreates both together.
+# Trailing dot puts the ownership TXT inside the delegated zone. Without it the apex's
+# TXT is cname-incode-demo.grandemeks.tech, a sibling in the registrar-hosted parent
+# that domainFilters drops, so external-dns stops owning the apex while logging "All
+# records are already up to date". Changing this later orphans the old TXT records.
 txtPrefix: "%{record_type}-."
 
 sources:
   - ingress
 
-# Long enough that a teardown does not leave records behind for long, short
-# enough not to hammer the Route53 API.
+# Fast enough that a teardown clears records, slow enough for the Route53 API.
 interval: 1m
 
 resources:

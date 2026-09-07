@@ -1,7 +1,5 @@
-# Resolved at plan time against the cluster's Kubernetes version rather than
-# pinned to literal strings that go stale within weeks. The trade-off is that a
-# plan run months apart can select a newer add-on version; pinning belongs in a
-# repository with a regular upgrade cadence.
+# Resolved against the cluster version rather than pinned strings that go stale.
+# Cost: two plans months apart can select different add-on versions.
 data "aws_eks_addon_version" "this" {
   for_each = toset(["vpc-cni", "kube-proxy", "coredns", "aws-ebs-csi-driver"])
 
@@ -10,7 +8,7 @@ data "aws_eks_addon_version" "this" {
   most_recent        = true
 }
 
-# Networking add-ons come first: nodes cannot become Ready without them.
+# Networking first: nodes cannot become Ready without these two.
 resource "aws_eks_addon" "vpc_cni" {
   cluster_name  = aws_eks_cluster.this.name
   addon_name    = "vpc-cni"
@@ -18,9 +16,7 @@ resource "aws_eks_addon" "vpc_cni" {
 
   service_account_role_arn = aws_iam_role.vpc_cni.arn
 
-  # Prefix delegation raises the pod limit per node from 35 to 110 on this
-  # instance type. Without it, the ENI and secondary-IP model caps pods well
-  # below what the available memory could actually run.
+  # Prefix delegation raises pods/node from 35 to 110 on t3.large.
   configuration_values = jsonencode({
     env = {
       ENABLE_PREFIX_DELEGATION = "true"
@@ -45,7 +41,7 @@ resource "aws_eks_addon" "kube_proxy" {
   tags = var.tags
 }
 
-# These two schedule real pods, so they wait for nodes to exist.
+# These two schedule real pods, so they wait for nodes.
 resource "aws_eks_addon" "coredns" {
   cluster_name  = aws_eks_cluster.this.name
   addon_name    = "coredns"
@@ -59,8 +55,8 @@ resource "aws_eks_addon" "coredns" {
   tags = var.tags
 }
 
-# Required for PersistentVolumeClaims. Prometheus, Grafana and Loki all need
-# storage that survives a pod restart.
+# Required for PVCs: Prometheus, Grafana and Loki all want storage that
+# survives a pod restart.
 resource "aws_eks_addon" "ebs_csi" {
   cluster_name  = aws_eks_cluster.this.name
   addon_name    = "aws-ebs-csi-driver"

@@ -4,10 +4,8 @@ metadata:
   name: opentelemetry-collector
   namespace: argocd
   annotations:
-    # Wave 1: Loki and Tempo are its exporter targets and are in the same wave,
-    # but the collector tolerates them being briefly absent — it retries. The
-    # application in wave 2 is what must not start before this exists, because
-    # traces emitted before the collector is up are simply lost.
+    # Wave 1. Loki and Tempo can be briefly absent since the collector retries,
+    # but traces the wave 2 app emits before this exists are lost.
     argocd.argoproj.io/sync-wave: "1"
   finalizers:
     - resources-finalizer.argocd.argoproj.io

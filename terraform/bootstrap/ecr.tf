@@ -1,8 +1,7 @@
 resource "aws_ecr_repository" "app" {
   name = "${var.project}/demo-app"
 
-  # Immutable tags mean a deployed tag can never be silently repointed at
-  # different bytes. A prerequisite for verifying image signatures later.
+  # A deployed tag can never be repointed at different bytes.
   image_tag_mutability = "IMMUTABLE"
 
   image_scanning_configuration {

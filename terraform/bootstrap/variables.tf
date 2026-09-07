@@ -11,13 +11,13 @@ variable "region" {
 }
 
 variable "dns_zone_name" {
-  description = "Subdomain hosted in this account"
+  description = "Subdomain whose hosted zone lives in this account."
   type        = string
   default     = "incode-demo.grandemeks.tech"
 }
 
 variable "github_owner" {
-  description = "GitHub user that owns repo allowed to assume the CI roles."
+  description = "GitHub user that owns the repository allowed to assume the CI roles."
   type        = string
   default     = "grandemeks"
 }

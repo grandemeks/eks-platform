@@ -1,14 +1,10 @@
-# Defaults and shape. Environment-specific overrides live in
-# argocd/configs/demo-app/values-<env>.yaml, which Argo CD layers on top of
-# this file through a multi-source Application.
+# Chart defaults. Per-environment overrides: argocd/configs/demo-app/values-<env>.yaml.
 
 replicaCount: 2
 
 image:
   repository: ""
-  # Written by CI. The tag is human-readable; the digest is what actually gets
-  # deployed when present, because it is byte-exact and can be verified against
-  # an image signature.
+  # Both written by CI. Digest wins over tag when set.
   tag: ""
   digest: ""
   pullPolicy: IfNotPresent
@@ -25,8 +21,7 @@ database:
   host: ""
   port: 5432
   name: demo
-  # The RDS parameter group sets rds.force_ssl=1, so the server rejects any
-  # non-TLS connection. This is the client half of that.
+  # RDS parameter group sets rds.force_ssl=1; the server rejects plaintext.
   sslMode: require
 
 resources:
@@ -34,18 +29,15 @@ resources:
     cpu: 50m
     memory: 64Mi
   limits:
-    # Memory only. A CPU limit is enforced by CFS quota, which throttles the
-    # process for the remainder of a 100ms period once spent, producing tail
-    # latency that looks like an application fault. The request already
-    # guarantees a share under contention.
+    # No CPU limit. CFS quota throttles for the rest of each 100ms period, which
+    # reads as application tail latency; the request already guarantees a share.
     memory: 128Mi
 
 podDisruptionBudget:
   enabled: true
   minAvailable: 1
 
-# Must exceed the application's shutdown sequence: it fails readiness for five
-# seconds, then drains for up to fifteen.
+# Must exceed the app's shutdown: 5s failing readiness, then up to 15s draining.
 terminationGracePeriodSeconds: 30
 
 ingress:
@@ -67,31 +59,23 @@ serviceMonitor:
   interval: 15s
   scrapeTimeout: 10s
 
-# Extra environment variables, appended to the ones the chart always sets.
+# Appended to the environment the chart always sets.
 extraEnv: []
 
-# Service level objectives, expressed as values rather than baked into the
-# alert expressions. Changing the target is a values change, and the same
-# chart can carry a stricter objective in production than in dev.
+# SLO targets as values, so prod can be stricter than dev without a chart change.
 slo:
-  # 99.5% availability over 30 days. The error budget is what is left over:
-  # 0.5% of requests may fail before the objective is missed.
+  # 99.5% availability over 30 days.
   errorBudget: 0.005
 
-  # Burn rates, from the Google SRE workbook. At burn rate 1 the budget lasts
-  # exactly the SLO window; at 14.4 it is exhausted in two days.
-  #
-  # 14.4 over 1h  — 2% of the budget in an hour. Page.
-  # 6    over 6h  — 5% of the budget in six hours. Page.
-  # 3    over 1d  — 10% of the budget in a day. Ticket.
-  # 1    over 3d  — the slow bleed a threshold alert never catches. Ticket.
+  # Google SRE workbook rates. 14.4/1h and 6/6h page; 3/1d and 1/3d ticket.
+  # At rate 1 the budget lasts exactly the 30-day window.
   pageFastBurnRate: 14.4
   pageSlowBurnRate: 6
   ticketFastBurnRate: 3
   ticketSlowBurnRate: 1
 
-  # 99% of requests under 250ms. The histogram buckets in the application put
-  # a boundary exactly at 0.25, so this is counted rather than interpolated.
+  # 99% under 250ms. The app's histogram has a bucket boundary exactly at 0.25,
+  # so the SLI is counted rather than interpolated.
   latencyObjectiveSeconds: 0.25
   latencyErrorBudget: 0.01
 

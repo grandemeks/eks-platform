@@ -4,14 +4,13 @@ serviceAccount:
   create: true
   name: aws-load-balancer-controller
   annotations:
-    # Must match the IRSA trust condition exactly: the role trusts only
-    # kube-system/aws-load-balancer-controller.
+    # IRSA trust policy names kube-system/aws-load-balancer-controller only.
     eks.amazonaws.com/role-arn: arn:aws:iam::385291933614:role/eks-platform-dev-aws-load-balancer-controller
 
 region: eu-central-1
 vpcId: vpc-0d8c60be7fdf4b67a
 
-# Two replicas so a node drain does not stop Ingress reconciliation.
+# A node drain must not stop Ingress reconciliation.
 replicaCount: 2
 
 resources:
@@ -21,6 +20,4 @@ resources:
   limits:
     memory: 192Mi
 
-# Subnets are discovered through the kubernetes.io/role/elb tags applied by the
-# network module. Listing them here would duplicate that knowledge and drift
-# the moment the VPC changes.
+# Subnets come from the kubernetes.io/role/elb tags the network module applies.

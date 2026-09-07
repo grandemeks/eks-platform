@@ -1,23 +1,12 @@
 #!/usr/bin/env bash
 #
-# Ordered teardown of the dev environment.
+# Ordered teardown of the dev environment. The order is load-bearing.
 #
-# terraform destroy alone does not work here, and that is not a defect in this
-# repository. Deleting an EKS cluster tears down the control plane but does not
-# drain what is running on it, so the CSI driver and the load balancer
-# controller lose their API server mid-reconcile. PersistentVolumeClaims become
-# orphaned EBS volumes, Ingresses become orphaned load balancers and security
-# groups, and those security groups then block the VPC from being deleted at
-# all. AWS ships a standalone cleanup script alongside its own EKS reference
-# architecture for exactly this reason.
-#
-# The shape of the solution is therefore: drain through the Kubernetes API
-# while it is still alive, destroy in stages so the controller is provably gone
-# before its leftovers are swept, then verify against the AWS API rather than
-# trusting the destroy output.
-#
-# Every wait, every ordering constraint and every sweep below was added after
-# it broke a real teardown.
+# A bare terraform destroy leaves orphans: deleting the cluster kills the CSI
+# driver and load balancer controller mid-reconcile, so PVCs become stranded EBS
+# volumes and Ingresses become stranded ALBs plus security groups, and those
+# security groups then block the VPC delete. So: drain via the Kubernetes API
+# while it still answers, destroy in stages, sweep by tag, verify against AWS.
 
 set -uo pipefail
 
@@ -33,13 +22,10 @@ log()  { printf '\n\033[1m=== %s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 warn() { printf '    ! %s\n' "$*"; }
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+# --- Helpers ---------------------------------------------------------------
 
-# Poll until a command produces no output. Used instead of fixed sleeps because
-# AWS deletions are asynchronous and vary by an order of magnitude between runs
-# — a sleep long enough to be safe is far longer than the usual case.
+# Poll rather than sleep: AWS delete latency varies by an order of magnitude,
+# so any fixed sleep is either unsafe or absurdly long. Never fails the run.
 wait_until_empty() {
   local what="$1" attempts="$2"; shift 2
   local i out
@@ -57,9 +43,8 @@ wait_until_empty() {
   return 0
 }
 
-# Resources the load balancer controller creates carry this tag. It is the only
-# reliable way to find them: they are not in Terraform state, and their names
-# contain a hash rather than anything predictable.
+# Tag lookup is the only handle on these: not in Terraform state, and the names
+# are hashed.
 lbc_load_balancers() {
   aws resourcegroupstaggingapi get-resources --region "$REGION" \
     --tag-filters "Key=elbv2.k8s.aws/cluster,Values=$CLUSTER_NAME" \
@@ -80,9 +65,8 @@ lbc_security_groups() {
     --query 'SecurityGroups[].GroupId' --output text 2>/dev/null
 }
 
-# Security groups the in-tree cloud provider creates for type=LoadBalancer
-# Services carry a different tag than the ones the load balancer controller
-# creates for Ingresses.
+# Service-type LoadBalancer groups carry a different tag than the controller's
+# Ingress groups, so both queries are needed.
 ccm_security_groups() {
   aws ec2 describe-security-groups --region "$REGION" \
     --filters "Name=tag:kubernetes.io/cluster/${CLUSTER_NAME},Values=owned" \
@@ -101,15 +85,13 @@ cluster_exists() {
 }
 
 # ---------------------------------------------------------------------------
-# Phase 1 — Kubernetes drain
-#
-# Everything here must happen while the API server is still answering. Once the
-# cluster is gone the controllers are gone with it, and their AWS resources
-# become orphans nothing will ever clean up.
+# Phase 1: Kubernetes drain. All of it must run while the API server still
+# answers; after the cluster is gone the controllers cannot clean up after
+# themselves.
 # ---------------------------------------------------------------------------
 drain_kubernetes() {
   if ! cluster_exists; then
-    log "Kubernetes drain — skipped, cluster not found"
+    log "Kubernetes drain skipped, cluster not found"
     return 0
   fi
 
@@ -117,24 +99,19 @@ drain_kubernetes() {
   aws eks update-kubeconfig --name "$CLUSTER_NAME" --region "$REGION" >/dev/null 2>&1
 
   if ! kubectl get --raw /readyz >/dev/null 2>&1; then
-    warn "cluster API not reachable, skipping drain — expect orphans for the sweep to catch"
+    warn "cluster API not reachable, skipping drain; expect orphans for the sweep to catch"
     return 0
   fi
 
-  # Argo CD has selfHeal enabled and will faithfully recreate anything deleted
-  # underneath it. Disabling automated sync first is what stops the two systems
-  # from fighting each other for the length of the teardown.
+  # First: selfHeal is on, so Argo recreates anything deleted below this point.
   log "Disabling Argo CD automated sync"
   for app in $(kubectl -n argocd get applications -o name 2>/dev/null); do
     kubectl -n argocd patch "$app" --type merge \
       -p '{"spec":{"syncPolicy":{"automated":null}}}' >/dev/null 2>&1
   done
 
-  # Argo Applications carry resources-finalizer.argocd.argoproj.io, which exists
-  # so that deleting an Application also deletes what it deployed. During
-  # teardown that guarantee inverts: if the controller is removed before the
-  # Application, nothing is left to run the finalizer and the object stays in
-  # Terminating forever — taking any helm_release that owns it down with it.
+  # Strip Argo finalizers before the controller goes: with nothing left to run
+  # them the Applications stick in Terminating and block the owning helm_release.
   log "Removing finalizers from Argo CD Applications"
   for app in $(kubectl -n argocd get applications -o name 2>/dev/null); do
     kubectl -n argocd patch "$app" --type merge \
@@ -143,11 +120,9 @@ drain_kubernetes() {
   done
   kubectl -n argocd delete applications --all --wait=false >/dev/null 2>&1
 
-  # Deleted in one call rather than one at a time. With a shared ALB group,
-  # removing Ingresses individually leaves the group non-empty between
-  # deletions, and the controller reconciles the remaining members by
-  # recreating the load balancer — and a fresh security group with it — after
-  # the sweep has already run.
+  # All in one call: these share an ALB group, and deleting them one at a time
+  # leaves the group non-empty, so the controller recreates the ALB and a new
+  # security group with it, after the sweep has run.
   log "Deleting Ingresses"
   kubectl delete ingress --all-namespaces --all --wait=false >/dev/null 2>&1
   kubectl delete ingress --all-namespaces --all --wait=true --timeout=2m 2>/dev/null
@@ -159,16 +134,13 @@ drain_kubernetes() {
       [ -n "${ns:-}" ] && kubectl -n "$ns" delete svc "$name" --wait=true --timeout=2m 2>/dev/null
     done
 
-  # kubectl returning is not the same as the load balancer being gone. Moving
-  # on early is what left an ALB holding ENIs through a thirteen-minute destroy
-  # that then failed.
+  # kubectl returning does not mean the ALB is gone; moving on early leaves it
+  # holding ENIs and the destroy fails.
   log "Waiting for load balancers to disappear"
   wait_until_empty "load balancers" 30 lbc_load_balancers
 
-  # Workloads before their volumes. A PVC carries a pvc-protection finalizer
-  # that is only released once no pod mounts it, so deleting claims while
-  # Prometheus and Grafana are still running blocks until the timeout and
-  # achieves nothing.
+  # Workloads before their claims: the pvc-protection finalizer only clears once
+  # no pod mounts the volume.
   log "Deleting workloads that hold volumes"
   local namespaces
   namespaces="$(kubectl get pvc --all-namespaces \
@@ -187,13 +159,9 @@ drain_kubernetes() {
     done
   fi
 
-  # Deleting the claim is what makes the CSI driver delete the underlying EBS
-  # volume. Terraform cannot do this: the volume is not in its state, because a
-  # controller created it in response to a Kubernetes object.
-  #
-  # --wait=false then poll, rather than --wait=true. A blocking delete against
-  # a claim whose finalizer has not cleared hangs for the full timeout and then
-  # reports failure, even though the deletion is progressing normally.
+  # Deleting the claim is the only way to get the EBS volume deleted; it is not
+  # in Terraform state. --wait=false then poll: a blocking delete on a claim
+  # whose finalizer has not cleared hangs the full timeout and reports failure.
   log "Deleting PersistentVolumeClaims"
   kubectl delete pvc --all-namespaces --all --wait=false >/dev/null 2>&1
   wait_until_empty "persistent volume claims" 18 \
@@ -204,33 +172,22 @@ drain_kubernetes() {
 }
 
 # ---------------------------------------------------------------------------
-# Phase 2 — Terraform
-#
-# Destroyed in two passes on purpose.
-#
-# The load balancer controller runs inside the cluster, so its leftovers cannot
-# be swept while it might still recreate them. Destroying the cluster first
-# guarantees it is gone; only then is the sweep meaningful. Attempting the
-# whole stack in one pass means the VPC deletion races the sweep and fails with
-# a DependencyViolation naming an ENI, which explains nothing.
-#
-# -target is normally a smell. Here it is the point: teardown genuinely has an
-# ordering requirement that the dependency graph cannot express, because the
-# dependency runs inside a resource Terraform manages rather than beside it.
+# Phase 2: Terraform, in two -target passes. The load balancer controller runs
+# inside the cluster, so the sweep is only meaningful once the cluster is gone.
+# One pass races the VPC delete against the sweep and fails with an ENI
+# DependencyViolation. The graph cannot express this: the dependency lives
+# inside a resource Terraform manages.
 # ---------------------------------------------------------------------------
 terraform_destroy() {
   cd "$ENV_DIR" || exit 1
 
-  # A CI runner has no .terraform directory. Cheap locally, essential there.
+  # A CI runner has no .terraform directory.
   log "terraform init"
   terraform init -input=false >/dev/null || { warn "init failed"; exit 1; }
 
-  # The helm provider authenticates using the cluster endpoint and an exec
-  # credential. Once the cluster is gone it cannot authenticate, but Terraform
-  # still attempts helm uninstall and hangs until its own timeout — there is no
-  # dependency edge telling it that Argo CD lives inside the thing being
-  # deleted. Removing the releases from state is accurate rather than evasive:
-  # deleting a cluster deletes everything in it.
+  # Must precede the cluster destroy: nothing tells Terraform that these releases
+  # live inside the cluster, so it attempts helm uninstall against a dead
+  # endpoint and hangs until its own timeout. Deleting the cluster removes them.
   log "Removing Helm releases from state"
   for res in helm_release.root_app helm_release.argocd; do
     if terraform state rm "$res" >/dev/null 2>&1; then
@@ -248,24 +205,20 @@ terraform_destroy() {
 
   log "Destroying the remaining infrastructure"
   if ! terraform destroy "${TF_ARGS[@]}" -lock-timeout=10m; then
-    # One retry after a second sweep. Deletion ordering in AWS is partly
-    # eventual: a resource that reports a dependency now can become deletable a
-    # minute later once something upstream finishes releasing it.
+    # One retry after a second sweep: a resource that reports a dependency now
+    # is often deletable a minute later.
     warn "destroy failed, sweeping again and retrying once"
     sweep_orphans
     terraform destroy "${TF_ARGS[@]}" -lock-timeout=10m || {
-      warn "destroy failed twice — inspect manually before assuming nothing is billing"
+      warn "destroy failed twice; inspect manually before assuming nothing is billing"
       return 1
     }
   fi
 }
 
 # ---------------------------------------------------------------------------
-# Phase 3 — Orphan sweep
-#
-# Runs after the cluster is destroyed and the controller is provably gone.
-# Everything here is identified by tag, because none of it is in Terraform
-# state and none of it has a predictable name.
+# Phase 3: orphan sweep. Only valid after the cluster is destroyed, otherwise
+# the controller recreates what this deletes.
 # ---------------------------------------------------------------------------
 sweep_orphans() {
   log "Sweeping resources the controllers left behind"
@@ -275,9 +228,8 @@ sweep_orphans() {
       && info "deleted load balancer: ${arn##*/}"
   done
 
-  # Load balancers release their ENIs asynchronously, and those ENIs are what
-  # actually hold the subnets. Deleting security groups before the ENIs are
-  # released fails; deleting the VPC before them fails too.
+  # Wait here before touching security groups: ALBs release their ENIs
+  # asynchronously, and those ENIs hold both the groups and the subnets.
   if [ -n "$(lbc_load_balancers)" ]; then
     wait_until_empty "load balancers" 18 lbc_load_balancers
     sleep 20
@@ -288,10 +240,8 @@ sweep_orphans() {
       && info "deleted target group: ${arn##*/}"
   done
 
-  # Two passes. The frontend security group the controller creates for a load
-  # balancer references the shared backend group, so the first attempt on the
-  # backend group fails with DependencyViolation and succeeds once the
-  # referring group is gone.
+  # Two passes: the frontend group references the shared backend group, so the
+  # backend delete only succeeds after the referring group is gone.
   for pass in 1 2; do
     for sg in $(lbc_security_groups) $(ccm_security_groups); do
       aws ec2 delete-security-group --region "$REGION" --group-id "$sg" >/dev/null 2>&1 \
@@ -313,19 +263,17 @@ sweep_orphans() {
 }
 
 # ---------------------------------------------------------------------------
-# Phase 4 — Verify
-#
-# Against the AWS API, not against the destroy output. Terraform reporting
-# success only means it deleted what it knew about.
+# Phase 4: verify against the AWS API, not the destroy output. Terraform
+# succeeding only means it deleted what it knew about.
 # ---------------------------------------------------------------------------
 verify() {
-  log "Verification — every line must be empty"
+  log "Verification: every line must be empty"
 
   local failed=0
   check() {
     local label="$1"; shift
     local out; out="$("$@" 2>/dev/null | tr '\t' ' ')"
-    printf '    %-22s %s\n' "$label" "${out:-—}"
+    printf '    %-22s %s\n' "$label" "${out:-none}"
     [ -n "$out" ] && failed=1
     return 0
   }
@@ -348,7 +296,7 @@ verify() {
   fi
 
   info "The bootstrap layer stays up by design: state bucket, KMS key, DNS zone,"
-  info "ECR repository, certificate and CI roles — roughly \$1.50/month."
+  info "ECR repository, certificate and CI roles: roughly \$1.50/month."
 
   return "$failed"
 }

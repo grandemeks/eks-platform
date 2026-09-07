@@ -1,9 +1,8 @@
 locals {
-  # AZs that will host a NAT gateway
-  # single_nat_gateway the first AZ
+  # Sorted so the single-NAT case always picks the same AZ across plans.
   nat_azs = var.single_nat_gateway ? [sort(keys(var.public_subnets))[0]] : sort(keys(var.public_subnets))
 
-  # Which NAT each private subnet routes through
+  # Which NAT each private subnet routes through.
   nat_by_az = {
     for az in keys(var.private_subnets) :
     az => var.single_nat_gateway ? local.nat_azs[0] : az
@@ -13,8 +12,7 @@ locals {
 resource "aws_vpc" "this" {
   cidr_block = var.vpc_cidr
 
-  # Both required by EKS: nodes resolve the cluster endpoint and register
-  # themselves using internal DNS names.
+  # Both required by EKS: nodes resolve and register by internal DNS name.
   enable_dns_support   = true
   enable_dns_hostnames = true
 
@@ -42,8 +40,8 @@ resource "aws_subnet" "public" {
   tags = merge(var.tags, {
     Name = "${var.name}-public-${each.key}"
 
-    # The AWS Load Balancer Controller discovers subnets by this tag.
-    # Without it, an Ingress stays pending with no useful error.
+    # The LB controller discovers subnets by this tag. Missing it, Ingress
+    # hangs in pending with no useful error.
     "kubernetes.io/role/elb" = "1"
   })
 }
@@ -104,7 +102,8 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public.id
 }
 
-# One route table per private subnet, so each can point at a different NAT when single_nat_gateway is false.
+# One table per private subnet, so each can point at a different NAT when
+# single_nat_gateway is false.
 resource "aws_route_table" "private" {
   for_each = var.private_subnets
 

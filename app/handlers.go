@@ -20,8 +20,7 @@ type Server struct {
 	metrics *Metrics
 	log     *slog.Logger
 
-	// Flipped to false when SIGTERM arrives, so readiness starts failing
-	// before the server stops accepting connections. See main.go.
+	// Cleared on SIGTERM so readiness fails before the drain begins. See main.go.
 	ready atomic.Bool
 }
 
@@ -34,20 +33,17 @@ func NewServer(cfg Config, store *Store, metrics *Metrics, log *slog.Logger) *Se
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	// otelhttp creates the server span and, crucially, reads any inbound
-	// traceparent header so this service's spans attach to a trace that
-	// started upstream rather than beginning a new one. The route pattern is
-	// passed explicitly as the span name; letting it default to the raw path
-	// produces one span name per URL, which is the same cardinality problem as
-	// unbounded metric labels.
+	// otelhttp must stay the outer wrapper: it creates the server span from any
+	// inbound traceparent, and Instrument reads that span for exemplars.
+	// Span name is the route pattern, not the raw path: raw paths are unbounded
+	// cardinality.
 	mux.Handle("GET /", otelhttp.NewHandler(
 		s.metrics.Instrument("/", http.HandlerFunc(s.handleRoot)),
 		"GET /",
 	))
 
-	// Probes are neither traced nor instrumented. The kubelet probes every few
-	// seconds; counting that as traffic would drown the real request rate and
-	// fill Tempo with spans nobody will ever read.
+	// Probes stay uninstrumented: kubelet polls every few seconds and would
+	// swamp the real request rate.
 	mux.Handle("GET /healthz", http.HandlerFunc(s.handleHealthz))
 	mux.Handle("GET /readyz", http.HandlerFunc(s.handleReadyz))
 
@@ -55,11 +51,8 @@ func (s *Server) Routes() http.Handler {
 		s.metrics.Registry(),
 		promhttp.HandlerOpts{
 			Registry: s.metrics.Registry(),
-			// Without this the endpoint serves the classic Prometheus text
-			// format, which has no syntax for exemplars — they are computed,
-			// stored in the histogram, and then silently dropped on the way
-			// out. This single line is the difference between exemplars
-			// working and appearing not to exist.
+			// Required for exemplars: the classic text format cannot express
+			// them, so they are dropped on the way out with no error.
 			EnableOpenMetrics: true,
 		},
 	))
@@ -67,11 +60,11 @@ func (s *Server) Routes() http.Handler {
 	return mux
 }
 
-// handleRoot is the actual workload: it writes a row and reads back the
-// running total, which proves end to end that the pod can reach RDS.
+// handleRoot writes a visit row and returns the running total, exercising the
+// path to RDS.
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
-	// Bounded so a slow database produces a fast 503 rather than a request
-	// that hangs until the client gives up.
+	// Shorter than the server WriteTimeout, so a slow DB gives a 503 rather
+	// than a hung request.
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
 	defer cancel()
 
@@ -90,9 +83,6 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 
 	s.metrics.SetDBUp(true)
 
-	// Attributes on the span the HTTP instrumentation created. A trace that
-	// only shows timings answers "how long"; attributes are what let it answer
-	// "on what".
 	spanAttr(ctx, attribute.Int64("app.total_visits", result.Total))
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -101,23 +91,19 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"hostname":     hostname(),
 		"total_visits": result.Total,
 		"first_visit":  result.First.UTC().Format(time.RFC3339),
-		// Returned so a caller can look up their own request in Tempo. Small
-		// touch, and the fastest way to demonstrate the trace pipeline works.
+		// Lets a caller look up their own request in Tempo.
 		"trace_id": traceIDFrom(ctx),
 	})
 }
 
-// handleHealthz answers liveness: is this process itself broken beyond
-// recovery? It deliberately does not touch the database. If it did, a database
-// outage would restart every pod in the deployment, turning a recoverable
-// dependency failure into a self-inflicted outage.
+// handleHealthz answers liveness. It must not touch the database: a DB outage
+// would then restart every replica.
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
-// handleReadyz answers readiness: should this pod receive traffic right now?
-// Here the database check belongs, because a pod that cannot reach the
-// database should leave the load balancer without being killed.
+// handleReadyz answers readiness. The DB check belongs here: a pod that cannot
+// reach the database should leave the load balancer, not be killed.
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	if !s.ready.Load() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "shutting down"})
@@ -140,12 +126,10 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 }
 
-// logCtx returns a logger that stamps every line with the current trace ID.
+// logCtx returns a logger that stamps each line with the current trace ID.
 //
-// This is the third side of the correlation triangle. The Grafana Loki
-// datasource is configured with a derived field on trace_id, so a log line
-// carrying this field renders as a link straight into the trace. Without it,
-// correlating a log with a trace means comparing timestamps by eye.
+// The field name must stay trace_id: the Loki datasource has a derived field on
+// it that renders the log-to-trace link.
 func (s *Server) logCtx(ctx context.Context) *slog.Logger {
 	if id := traceIDFrom(ctx); id != "" {
 		return s.log.With(slog.String("trace_id", id))
@@ -159,9 +143,9 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// hostname returns the pod name under Kubernetes, which identifies the replica
+// that served a request.
 func hostname() string {
-	// In Kubernetes this is the pod name, which makes it obvious from a
-	// response which replica served the request.
 	h, err := os.Hostname()
 	if err != nil {
 		return "unknown"

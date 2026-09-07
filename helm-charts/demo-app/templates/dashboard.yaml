@@ -5,21 +5,11 @@ metadata:
   name: {{ include "demo-app.fullname" . }}-dashboard
   labels:
     {{- include "demo-app.labels" . | nindent 4 }}
-    # The Grafana sidecar watches for this label across all namespaces and
-    # loads whatever it finds. Shipping the dashboard with the chart means the
-    # panels and the metrics they draw are versioned together, so a metric
-    # rename and its dashboard fix land in the same commit instead of the
-    # dashboard silently going blank.
+    # The Grafana sidecar loads ConfigMaps with this label from any namespace.
     grafana_dashboard: "1"
 data:
-  # Read from a file rather than inlined. Grafana legend formats use the same
-  # delimiters as Helm for field interpolation, so inlining the JSON makes Helm
-  # try to execute them as template functions and the render fails. Content
-  # loaded with Files.Get is copied verbatim and never reaches the template
-  # engine.
-  #
-  # Note this applies to comments too: everything under templates/ is template
-  # source, including lines YAML would ignore.
+  # Files.Get, not inlined: Grafana legend formats use Helm's own delimiters and
+  # the render fails. Applies to comments here too, which are template source.
   demo-app.json: |
 {{ .Files.Get "dashboards/demo-app.json" | indent 4 }}
 {{- end }}

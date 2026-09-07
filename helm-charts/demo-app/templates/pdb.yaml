@@ -6,10 +6,7 @@ metadata:
   labels:
     {{- include "demo-app.labels" . | nindent 4 }}
 spec:
-  # Governs voluntary disruptions only — node drains during a cluster or node
-  # group upgrade. The rollout strategy protects deploys; this protects drains.
-  # Without it, both nodes can be drained at once and the service goes to zero
-  # despite a perfect rollout strategy.
+  # Covers node drains only. Without it an upgrade can drain both nodes at once.
   minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
   selector:
     matchLabels:

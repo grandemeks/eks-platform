@@ -10,8 +10,8 @@ data "aws_iam_policy_document" "cluster_assume" {
   }
 }
 
-# The control plane assumes this role to manage ENIs, security groups and
-# load balancers on your behalf.
+# Assumed by the control plane to manage ENIs, security groups and load
+# balancers in this account.
 resource "aws_iam_role" "cluster" {
   name               = "${var.name}-cluster"
   assume_role_policy = data.aws_iam_policy_document.cluster_assume.json

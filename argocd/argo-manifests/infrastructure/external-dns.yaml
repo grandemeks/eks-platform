@@ -4,8 +4,7 @@ metadata:
   name: external-dns
   namespace: argocd
   annotations:
-    # Wave 0 with the other controllers: the Ingress in wave 2 needs a DNS
-    # record the moment it exists.
+    # Wave 0: the wave 2 Ingress needs a DNS record as soon as it exists.
     argocd.argoproj.io/sync-wave: "0"
   finalizers:
     - resources-finalizer.argocd.argoproj.io

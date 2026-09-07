@@ -7,10 +7,8 @@ import (
 	"time"
 )
 
-// Config is populated entirely from the environment.
-// Nothing about where this runs is compiled into the binary, so the same image is promoted unchanged
-// from a laptop to the cluster - the twelve-factor rule that makes an image
-// reproducible.
+// Config is populated entirely from the environment, so one image is promoted
+// unchanged from a laptop to the cluster.
 type Config struct {
 	Port            string
 	ShutdownTimeout time.Duration
@@ -22,17 +20,14 @@ type Config struct {
 	DBPassword string
 	DBSSLMode  string
 
-	// Version is stamped in at build time via -ldflags and exported as a
-	// metric label, so a dashboard can show which build served a request.
+	// Version becomes an app_build_info label, so a dashboard can tie a latency
+	// change to the build that caused it.
 	Version string
 
-	// Identifies this service in Tempo and on the service graph. Set from the
-	// environment rather than hardcoded so the same binary can run as a
-	// differently-named service in another environment.
+	// Identifies this service in Tempo and on the service graph.
 	ServiceName string
 
-	// Carried as a resource attribute on every span, so traces from dev and
-	// production are distinguishable in a shared backend.
+	// Span resource attribute; separates dev from prod in a shared backend.
 	Environment string
 }
 
@@ -46,16 +41,12 @@ func LoadConfig() (Config, error) {
 		DBName: env("DB_NAME", "demo"),
 		DBUser: os.Getenv("DB_USER"),
 
-		// Read from the environment, which Kubernetes populates from a Secret
-		// that External Secrets syncs out of AWS Secrets Manager. The password
-		// never exists in this repository, in the image, or in Terraform state.
+		// Injected from a Secret that External Secrets syncs from AWS Secrets
+		// Manager; never in this repo, the image, or Terraform state.
 		DBPassword: os.Getenv("DB_PASSWORD"),
 
-		// require rather than verify-full: RDS presents a certificate signed by
-		// the Amazon RDS CA, and verifying it would mean shipping that bundle
-		// into the image. Traffic is encrypted either way; this trades
-		// certificate pinning for a simpler image, and the connection never
-		// leaves the VPC.
+		// require, not verify-full: verifying would mean shipping the RDS CA
+		// bundle in the image. Still encrypted, and the hop stays in the VPC.
 		DBSSLMode: env("DB_SSLMODE", "require"),
 
 		Version:     env("APP_VERSION", "dev"),
@@ -63,9 +54,8 @@ func LoadConfig() (Config, error) {
 		Environment: env("OTEL_DEPLOYMENT_ENVIRONMENT", "dev"),
 	}
 
-	// Fail fast and loudly. A pod that starts without a database configured
-	// would pass its liveness probe and quietly serve errors, which is worse
-	// than a CrashLoopBackOff that is visible in one kubectl command.
+	// Fail fast: a pod without DB config passes liveness and serves errors
+	// quietly, which is harder to spot than a CrashLoopBackOff.
 	for name, value := range map[string]string{
 		"DB_HOST":     c.DBHost,
 		"DB_USER":     c.DBUser,
@@ -79,7 +69,7 @@ func LoadConfig() (Config, error) {
 	return c, nil
 }
 
-// DSN never appears in a log line: the password would travel with it.
+// DSN returns the pgx connection string. Never log it: it carries the password.
 func (c Config) DSN() string {
 	return fmt.Sprintf(
 		"host=%s port=%s dbname=%s user=%s password=%s sslmode=%s",

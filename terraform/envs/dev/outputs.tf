@@ -45,12 +45,12 @@ output "database_endpoint" {
 }
 
 output "irsa_aws_load_balancer_controller_role_arn" {
-  description = "Annotate the controller's service account with this."
+  description = "IRSA role ARN for the AWS Load Balancer Controller's service account annotation."
   value       = module.irsa_aws_load_balancer_controller.role_arn
 }
 
 output "irsa_demo_app_secrets_role_arn" {
-  description = "Annotate the demo namespace secret-reader service account with this."
+  description = "IRSA role ARN for the secret-reader service account in the demo namespace."
   value       = module.irsa_demo_app_secrets.role_arn
 }
 
@@ -64,17 +64,12 @@ output "irsa_external_dns_role_arn" {
 }
 
 output "irsa_grafana_secrets_role_arn" {
-  description = "Annotate the monitoring namespace secret-reader service account with this."
+  description = "IRSA role ARN for the secret-reader service account in the monitoring namespace."
   value       = module.irsa_grafana_secrets.role_arn
 }
 
 output "grafana_admin_secret_name" {
-  description = <<-EOT
-    Name of the Secrets Manager secret holding Grafana's admin credential.
-    Referenced by name rather than ARN because this secret is created here, so
-    the name is stable across a destroy/apply — unlike the RDS-managed secret,
-    whose ARN carries a random suffix and has to be re-synced after a rebuild.
-  EOT
+  description = "Name of the Secrets Manager secret holding Grafana's admin credential. Stable across a destroy and apply, unlike the RDS-managed secret's ARN with its random suffix."
   value       = aws_secretsmanager_secret.grafana_admin.name
 }
 

@@ -9,7 +9,7 @@ terraform {
   }
 }
 
-# Resolves the newest minor release within the pinned major, at plan time.
+# Newest minor inside the pinned major, resolved at plan time.
 data "aws_rds_engine_version" "postgres" {
   engine  = "postgres"
   version = var.engine_major_version
@@ -26,9 +26,8 @@ resource "aws_db_subnet_group" "this" {
   tags       = merge(var.tags, { Name = var.name })
 }
 
-# No inline ingress or egress here. Inline rules and separate rule resources
-# fight each other: Terraform removes anything not declared inline on every
-# apply. Rules are their own resources below.
+# No inline rules: inline blocks and standalone rule resources fight, and
+# Terraform strips anything not declared inline on every apply.
 resource "aws_security_group" "this" {
   name_prefix = "${var.name}-rds-"
   description = "Postgres access for ${var.name}"
@@ -36,8 +35,8 @@ resource "aws_security_group" "this" {
 
   tags = merge(var.tags, { Name = "${var.name}-rds" })
 
-  # The database is referenced by other resources, so replacement has to create
-  # the new group before destroying the old one.
+  # The instance holds a reference, so a replacement must create the new group
+  # before the old one is destroyed.
   lifecycle {
     create_before_destroy = true
   }
@@ -55,9 +54,8 @@ resource "aws_vpc_security_group_ingress_rule" "postgres" {
   description = "PostgreSQL from ${each.key}"
 }
 
-# Deliberately no egress rule. A managed RDS instance initiates no outbound
-# connections, and AWS does not attach a default allow-all rule when none is
-# declared. Leaving it out is the tighter configuration, not an omission.
+# No egress rule: RDS initiates nothing outbound, and AWS attaches no default
+# allow-all when none is declared.
 
 # -----------------------------------------------------------------------------
 # Parameters
@@ -68,25 +66,21 @@ resource "aws_db_parameter_group" "this" {
   family      = "postgres${var.engine_major_version}"
   description = "Parameters for ${var.name}"
 
-  # Rejects any connection that is not TLS. Without this, sslmode=require on the
-  # client is a client-side promise the server never verifies — a misconfigured
-  # application could send credentials in the clear and nothing would complain.
+  # force_ssl server-side. sslmode=require on the client alone verifies nothing.
   parameter {
     name         = "rds.force_ssl"
     value        = "1"
     apply_method = "pending-reboot"
   }
 
-  # Logs every statement slower than a second. The first thing you want when
-  # latency climbs and the application metrics point at the database.
+  # 1s threshold: attributes a latency spike without logging every statement.
   parameter {
     name         = "log_min_duration_statement"
     value        = "1000"
     apply_method = "immediate"
   }
 
-  # Records connections and disconnections, which makes connection-pool
-  # misbehaviour visible in the logs rather than only in metrics.
+  # Makes connection-pool churn visible in logs, not just in metrics.
   parameter {
     name         = "log_connections"
     value        = "all"
@@ -117,8 +111,8 @@ resource "aws_db_instance" "this" {
   engine_version = data.aws_rds_engine_version.postgres.version
   instance_class = var.instance_class
 
-  # gp3 rather than gp2: baseline throughput is independent of volume size, so
-  # a 20 GB volume is not starved of IOPS the way gp2 would be.
+  # gp3: baseline throughput is independent of volume size, so 20 GB is not
+  # IOPS-starved the way gp2 would be.
   storage_type          = "gp3"
   allocated_storage     = var.allocated_storage
   max_allocated_storage = var.max_allocated_storage
@@ -129,10 +123,8 @@ resource "aws_db_instance" "this" {
   db_name  = var.database_name
   username = var.master_username
 
-  # The password is generated and rotated by RDS and stored in Secrets Manager.
-  # Terraform never sees it, so it cannot appear in state, in a plan output, or
-  # in a CI log. The alternative — random_password plus a variable — puts the
-  # credential in plaintext in the state file, which is why it is not used here.
+  # RDS generates and rotates the password into Secrets Manager, so it never
+  # reaches state, a plan output or a CI log. random_password would.
   manage_master_user_password   = true
   master_user_secret_kms_key_id = var.kms_key_arn
 
@@ -140,7 +132,6 @@ resource "aws_db_instance" "this" {
   vpc_security_group_ids = [aws_security_group.this.id]
   parameter_group_name   = aws_db_parameter_group.this.name
 
-  # No public endpoint. The only route to this database is from inside the VPC.
   publicly_accessible = false
 
   multi_az = var.multi_az
@@ -150,8 +141,7 @@ resource "aws_db_instance" "this" {
   maintenance_window      = "sun:03:30-sun:04:30"
   copy_tags_to_snapshot   = true
 
-  # Minor versions carry security fixes and are applied in the maintenance
-  # window. Major versions are a deliberate, tested migration, never automatic.
+  # Minor upgrades ride the maintenance window; majors are a tested migration.
   auto_minor_version_upgrade  = true
   allow_major_version_upgrade = false
 
@@ -160,8 +150,8 @@ resource "aws_db_instance" "this" {
   performance_insights_retention_period = var.performance_insights_retention_period
   performance_insights_kms_key_id       = var.kms_key_arn
 
-  # OS-level metrics at a granularity CloudWatch's standard instance metrics
-  # cannot reach — per-process CPU and memory, disk queue depth.
+  # Per-process CPU and memory and disk queue depth, none of which standard
+  # CloudWatch instance metrics carry.
   monitoring_interval = var.monitoring_interval
   monitoring_role_arn = var.monitoring_interval > 0 ? aws_iam_role.monitoring[0].arn : null
 
@@ -173,30 +163,27 @@ resource "aws_db_instance" "this" {
     "${var.name}-final-${formatdate("YYYYMMDDhhmmss", timestamp())}"
   )
 
-  # Acceptable in an environment that is torn down daily; production would
-  # queue changes for the maintenance window instead.
+  # Torn down daily. Production would queue changes for the maintenance window.
   apply_immediately = true
 
-  # The log groups must exist before the instance does. RDS creates them itself
-  # the moment it starts exporting, with retention set to never expire, and
-  # then Terraform's own resource collides with what RDS already made. Creating
-  # them first is what makes the retention setting stick.
+  # RDS creates these groups itself with never-expire retention the moment it
+  # starts exporting, colliding with the resource below. Creating them first is
+  # what makes the retention setting stick.
   depends_on = [aws_cloudwatch_log_group.postgres]
 
   tags = merge(var.tags, { Name = var.name })
 
   lifecycle {
     ignore_changes = [
-      # Recomputed on every plan and would otherwise show a permanent diff.
+      # timestamp() is recomputed every plan: permanent diff otherwise.
       final_snapshot_identifier,
-      # Minor upgrades are applied by RDS, not by Terraform.
+      # RDS applies minor upgrades, not Terraform.
       engine_version,
     ]
   }
 }
 
-# Retention on the exported log groups. RDS creates these itself with no
-# expiry, so without this they grow and bill forever.
+# RDS would create these with no expiry, so without this they bill forever.
 resource "aws_cloudwatch_log_group" "postgres" {
   for_each = toset(["postgresql", "upgrade"])
 

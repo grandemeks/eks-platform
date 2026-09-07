@@ -1,6 +1,5 @@
-# Enhanced Monitoring runs an agent on the database host and writes OS-level
-# metrics to CloudWatch Logs under RDSOSMetrics. It needs its own role because
-# the agent, not the instance, is the principal doing the writing.
+# The Enhanced Monitoring agent on the DB host, not the instance, is the
+# principal writing to RDSOSMetrics, so it needs its own role.
 
 data "aws_iam_policy_document" "monitoring_assume" {
   count = var.monitoring_interval > 0 ? 1 : 0

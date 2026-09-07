@@ -1,5 +1,5 @@
-# Pre-created so retention and encryption are under our control. EKS would
-# otherwise create this group itself, with retention set to never expire.
+# Pre-created so retention is ours. EKS would otherwise create it with
+# never-expire retention.
 resource "aws_cloudwatch_log_group" "cluster" {
   name              = "/aws/eks/${var.name}/cluster"
   retention_in_days = var.log_retention_days
@@ -14,25 +14,21 @@ resource "aws_eks_cluster" "this" {
   vpc_config {
     subnet_ids = var.private_subnet_ids
 
-    # Both endpoints are on: nodes and in-cluster workloads reach the API
-    # over the private path, while kubectl and CI use the public one.
+    # Private for nodes and in-cluster workloads, public for kubectl and CI.
     endpoint_private_access = true
     endpoint_public_access  = true
     public_access_cidrs     = var.public_access_cidrs
   }
 
   access_config {
-    # "API" replaces the old aws-auth ConfigMap. Access is now granted with
-    # real AWS resources that Terraform can manage, rather than by editing a
-    # ConfigMap that lived only inside the cluster and was easy to lock
-    # yourself out of.
+    # API replaces the aws-auth ConfigMap: access entries are real AWS
+    # resources Terraform can manage, and are far harder to lock yourself out of.
     authentication_mode = "API"
 
     bootstrap_cluster_creator_admin_permissions = false
   }
 
-  # Envelope encryption for Kubernetes secrets in etcd. Without it, secrets
-  # are only base64-encoded at rest.
+  # Envelope encryption in etcd. Without it, Secrets are only base64 at rest.
   encryption_config {
     provider {
       key_arn = var.kms_key_arn
@@ -42,8 +38,7 @@ resource "aws_eks_cluster" "this" {
 
   enabled_cluster_log_types = var.enabled_cluster_log_types
 
-  # The role must carry its policy, and the log group must exist, before the
-  # cluster is created. Terraform cannot infer either ordering on its own.
+  # Neither ordering is inferable from a reference.
   depends_on = [
     aws_iam_role_policy_attachment.cluster,
     aws_cloudwatch_log_group.cluster,
@@ -53,10 +48,8 @@ resource "aws_eks_cluster" "this" {
 }
 
 # --- IRSA ---------------------------------------------------------------------
-# Each cluster publishes an OIDC issuer. Registering it as an identity provider
-# lets a Kubernetes service account assume an IAM role directly, so a pod gets
-# scoped AWS credentials without a single stored key. Same pattern as the
-# GitHub Actions federation in the bootstrap layer.
+# Registering the cluster's OIDC issuer lets a service account assume an IAM
+# role directly, so a pod gets scoped credentials with no stored key.
 data "tls_certificate" "oidc" {
   url = aws_eks_cluster.this.identity[0].oidc[0].issuer
 }

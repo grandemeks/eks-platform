@@ -10,11 +10,7 @@ variable "vpc_cidr" {
 }
 
 variable "public_subnets" {
-  description = <<-EOT
-    Map of availability zone to CIDR block for public subnets.
-    Keyed by AZ so subnets are addressed by a stable identity rather than by
-    list position, reordering the list would otherwise destroy and recreate them.
-  EOT
+  description = "Map of availability zone to CIDR block for public subnets. Keyed by AZ so that reordering does not destroy and recreate the subnets."
   type        = map(string)
 }
 
@@ -24,11 +20,7 @@ variable "private_subnets" {
 }
 
 variable "single_nat_gateway" {
-  description = <<-EOT
-    When true, all private subnets egress through one NAT gateway.
-    Cheaper, but the NAT becomes a single point of failure across AZs.
-    Production sets this to false, giving one NAT per availability zone.
-  EOT
+  description = "Route all private subnets through a single NAT gateway. Cheaper, but that gateway becomes a single point of failure across AZs; false gives one NAT per AZ."
   type        = bool
   default     = true
 }

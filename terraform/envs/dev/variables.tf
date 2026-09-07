@@ -41,7 +41,7 @@ variable "private_subnets" {
 }
 
 variable "single_nat_gateway" {
-  description = "One NAT gateway for the whole VPC instead of one per AZ as a Cost decision"
+  description = "Use one NAT gateway for the whole VPC instead of one per AZ, to keep cost down."
   type        = bool
   default     = true
 }
@@ -59,34 +59,13 @@ variable "cluster_public_access_cidrs" {
 }
 
 variable "cluster_admin_principal_arns" {
-  description = <<-EOT
-    Extra IAM principals granted cluster-admin, beyond whoever runs the apply.
-
-    The default is not empty on purpose. This value used to live only in
-    terraform.tfvars, which is gitignored, so a local apply saw a populated list
-    and a CI apply saw an empty one. Terraform behaved correctly in both cases
-    and removed the access entry it could not see in configuration — which meant
-    a CI apply silently revoked the operator's own access to the cluster, and
-    the failure only surfaced later as an unexplained Unauthorized.
-
-    An IAM ARN is not a secret. Keeping it in code instead of in an ignored file
-    is what makes the two environments behave identically, which is the whole
-    claim the repository makes about itself.
-  EOT
+  description = "Extra IAM principals granted cluster-admin, beyond whoever runs the apply. An IAM ARN is not a secret, so this has a default in code rather than living only in gitignored tfvars, where a CI apply would see an empty list and revoke the access entry."
   type        = list(string)
   default     = ["arn:aws:iam::385291933614:user/milos-admin"]
 }
 
 variable "argocd_chart_version" {
-  description = <<-EOT
-    Argo CD Helm chart version. Pinned rather than floating: an unpinned chart
-    means a rebuild months from now installs a different Argo CD than the one
-    this repository was tested against.
-
-    Verify what is current with:
-      helm repo add argo https://argoproj.github.io/argo-helm
-      helm search repo argo/argo-cd --versions | head
-  EOT
+  description = "Argo CD Helm chart version, pinned so a later rebuild installs the same release. List available versions with: helm search repo argo/argo-cd --versions"
   type        = string
   default     = "10.6.4"
 }

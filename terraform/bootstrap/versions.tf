@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.11" # State native locking in S3
+  required_version = ">= 1.11" # use_lockfile below needs 1.11+
 
   backend "s3" {
     bucket       = "eks-platform-tfstate-385291933614"
@@ -20,7 +20,7 @@ terraform {
 provider "aws" {
   region = var.region
 
-  default_tags { # Automatic tag propagation, later for FinOps
+  default_tags { # cost allocation
     tags = {
       Project   = var.project
       Layer     = "bootstrap"
@@ -29,4 +29,4 @@ provider "aws" {
   }
 }
 
-data "aws_caller_identity" "current" {} # for Account ID 
+data "aws_caller_identity" "current" {} # account ID for the state bucket name

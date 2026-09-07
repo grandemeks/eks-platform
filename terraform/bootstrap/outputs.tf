@@ -14,7 +14,7 @@ output "dns_zone_id" {
 }
 
 output "dns_delegation_records" {
-  description = "NS records to create at the register of the parent domain."
+  description = "NS records to create at the registrar of the parent domain."
   value       = aws_route53_zone.demo.name_servers
 }
 

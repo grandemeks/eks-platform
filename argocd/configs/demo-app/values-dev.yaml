@@ -1,15 +1,10 @@
-# Environment overrides for dev.
-#
-# The image block is rewritten by CI on every successful build. The database
-# and secret references come from Terraform outputs and change whenever the
-# environment is recreated — RDS generates a new Secrets Manager secret each
-# time, so its ARN is not stable across a destroy/apply cycle.
+# Dev overrides. CI rewrites the image block; the database and secret references
+# come from Terraform outputs and change on every destroy/apply.
 
 image:
   repository: 385291933614.dkr.ecr.eu-central-1.amazonaws.com/eks-platform/demo-app
   tag: "0d36506"
-  # The digest is what actually gets deployed. The tag stays for humans and
-  # for the version label on metrics.
+  # Digest is what deploys; the tag feeds the version label on metrics.
   digest: "sha256:912636649c2e118193a97310a748ac18b50e71b17c969a61725344c8a1fc64b1"
 
 database:
@@ -21,24 +16,19 @@ database:
 externalSecret:
   enabled: true
   region: eu-central-1
-  # Full ARN, not the name. Secrets Manager appends a random six-character
-  # suffix to the ARN that is not part of the secret's name, so deriving one
-  # from the other produces a value that does not resolve.
+  # Full ARN, not the name. The six-character suffix is not part of the name,
+  # so it cannot be derived, and it changes on every rebuild.
   remoteSecretName: "arn:aws:secretsmanager:eu-central-1:385291933614:secret:rds!db-b185b635-b82e-47c3-b44d-f76b9fdeba6d-eMqJ2a"
   roleArn: "arn:aws:iam::385291933614:role/eks-platform-dev-demo-app-secrets"
 
 ingress:
   enabled: true
   host: incode-demo.grandemeks.tech
-  # Issued by ACM in the bootstrap layer, validated through the delegated
-  # Route53 zone. Stable across environment rebuilds because it lives in the
-  # persistent stack.
+  # ACM cert from the persistent bootstrap stack, so it survives rebuilds.
   certificateArn: "arn:aws:acm:eu-central-1:385291933614:certificate/19d20204-58a8-4fb6-b70c-049295d1a4bb"
   group: eks-platform-dev
 
-# Observability is switched on per environment rather than in the chart
-# defaults, so a bare `helm install` of this chart stays self-contained and
-# does not fail on CRDs the target cluster may not have.
+# Off in the chart defaults so a bare helm install does not fail on missing CRDs.
 serviceMonitor:
   enabled: true
 
@@ -50,10 +40,7 @@ dashboard:
 
 
 extraEnv:
-  # The collector runs as a DaemonSet with hostPort, so the pod reaches the one
-  # on its own node rather than crossing to another. That keeps the export hop
-  # local, and it means a node losing its collector affects only the pods on
-  # that node instead of the whole cluster losing traces.
+  # hostIP reaches the collector's hostPort on this pod's own node.
   - name: OTEL_COLLECTOR_HOST
     valueFrom:
       fieldRef:
@@ -62,8 +49,7 @@ extraEnv:
   - name: OTEL_EXPORTER_OTLP_ENDPOINT
     value: "http://$(OTEL_COLLECTOR_HOST):4318"
 
-  # Becomes service.name on every span. This is what Tempo groups by and what
-  # the nodes on the service graph are named after.
+  # Becomes service.name, which Tempo groups by and names service-graph nodes after.
   - name: OTEL_SERVICE_NAME
     value: demo-app
 

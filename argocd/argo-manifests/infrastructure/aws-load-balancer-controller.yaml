@@ -19,8 +19,7 @@ spec:
         valueFiles:
           - $values/argocd/configs/infrastructure/aws-load-balancer-controller-values.yaml
 
-    # The same repository again, purely as a source of value files. No path, so
-    # no manifests are generated from it.
+    # Value files only; no path, so no manifests come from this source.
     - repoURL: https://github.com/grandemeks/eks-platform.git
       targetRevision: main
       ref: values

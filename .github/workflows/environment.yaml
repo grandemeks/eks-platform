@@ -1,26 +1,10 @@
 name: environment
 
-# The only workflow that changes infrastructure. Two ways in:
-#
-#   push to main touching terraform/**   apply the reviewed change
-#   manual dispatch                      bring the environment up or down
-#
-# There is deliberately no pull_request trigger. Plans run in pr-checks.yaml,
-# which has no apply path, so a mistake in an `if:` expression here cannot let
-# a pull request reach an apply — the trigger does not exist in this file.
-#
-# That is a guard rail, not a boundary. For pull_request events GitHub runs the
-# workflow file from the head branch, and the CI role's trust policy accepts
-# pull_request, so a pull request could still add a step that assumes the role
-# directly. Branch protection and the required reviewer on the job below are
-# what actually stop that.
-#
-# The manual dispatch exists because the brief asks for the cluster to be torn
-# down when nobody is working on it. A note in the README asking someone to
-# remember is not a control; a workflow is. It also guarantees teardown always
-# runs the same ordered script rather than whatever sequence of commands the
-# operator recalls at the time — which is how orphaned load balancers and
-# unattached volumes accumulate.
+# The only workflow that applies infrastructure. Do not add a pull_request
+# trigger: plans live in pr-checks.yaml, which has no apply path, so a bad `if:`
+# here cannot reach an apply. That is a guard rail only. GitHub runs the head
+# branch's workflow file on pull_request and the CI role's trust policy accepts
+# it, so branch protection plus the required reviewer below are the real control.
 on:
   push:
     branches: [main]
@@ -45,8 +29,7 @@ permissions:
   id-token: write
 
 concurrency:
-  # Never cancel in flight: a half-applied change is worse than a queued one,
-  # and an apply must never overlap a destroy against the same state.
+  # Never cancel in flight: an apply must not overlap a destroy on the same state.
   group: environment
   cancel-in-progress: false
 
@@ -59,14 +42,11 @@ jobs:
   environment:
     runs-on: ubuntu-latest
 
-    # A GitHub Environment with a required reviewer. The job pauses here until
-    # someone approves, and the approval is recorded against the run. Without
-    # it, a merge to main applies to live infrastructure unattended.
+    # Carries a required reviewer; without it a merge to main applies unattended.
     environment: dev
 
     steps:
-      # Typed confirmation on the manual path, because workflow_dispatch has no
-      # undo and the down path deletes a database.
+      # workflow_dispatch has no undo and the down path deletes a database.
       - name: Verify confirmation
         if: github.event_name == 'workflow_dispatch'
         run: |
@@ -95,9 +75,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-env-${{ github.run_id }}
 
-      # Bootstrap first: the environment stack looks up the shared KMS key by
-      # alias and the certificate by ARN, both owned by bootstrap. On a normal
-      # change this is a no-op.
+      # Must precede the env stack: that stack looks up the KMS key and certificate
+      # bootstrap owns. No-op on a normal change.
       - name: Apply bootstrap
         if: github.event_name == 'push' || inputs.action == 'up'
         working-directory: terraform/bootstrap
@@ -112,11 +91,9 @@ jobs:
           terraform init -input=false
           terraform apply -input=false -auto-approve -lock-timeout=10m
 
-      # A rebuilt environment produces new identifiers: RDS generates a fresh
-      # Secrets Manager secret, the VPC is new, and a new cluster means a new
-      # OIDC provider and new IRSA role ARNs. Argo reads those from Git, so
-      # until they are synced and committed the application cannot reconcile.
-      # Surfacing them here is what turns a silent failure into a visible step.
+      # A rebuild changes the RDS secret ARN, VPC id and IRSA role ARNs. Argo reads
+      # those from Git, so the app cannot reconcile until they are synced and
+      # committed. Printed here so the required manual step is not silent.
       - name: Report values that need syncing
         if: github.event_name == 'push' || inputs.action == 'up'
         working-directory: terraform/envs/dev
@@ -133,10 +110,8 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # The script, not a bare terraform destroy. It removes the Helm releases
-      # from state first, deletes the Kubernetes objects that own AWS resources
-      # Terraform cannot see, waits for the controllers to finish, and verifies
-      # afterwards that nothing is still billing.
+      # The script, not a bare terraform destroy: it drains the Kubernetes objects
+      # that own AWS resources Terraform cannot see. See scripts/teardown.sh.
       - name: Tear the environment down
         if: github.event_name == 'workflow_dispatch' && inputs.action == 'down'
         run: ./scripts/teardown.sh -auto-approve
@@ -156,5 +131,5 @@ jobs:
             echo '```'
             echo
             echo "Empty values mean nothing is billing. The bootstrap layer stays up by design:"
-            echo "state bucket, KMS key, DNS zone, ECR, certificate, CI roles — about \$1.50/month."
+            echo "state bucket, KMS key, DNS zone, ECR, certificate, CI roles: about \$1.50/month."
           } >> "$GITHUB_STEP_SUMMARY"

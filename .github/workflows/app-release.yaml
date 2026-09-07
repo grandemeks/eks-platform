@@ -1,12 +1,7 @@
 name: app release
 
-# Builds, scans, signs and publishes the application image, then writes the new
-# reference into the Argo CD values file.
-#
-# This workflow does not deploy. Its last action is a commit; Argo CD notices
-# the change and reconciles the cluster. That separation is the whole point of
-# GitOps — the pipeline needs no cluster credentials at all, and the deployed
-# state is whatever is in Git rather than whatever the last job happened to do.
+# Ends with a commit, not a deploy: this workflow holds no cluster credentials.
+# Argo CD reconciles from the committed values file.
 on:
   push:
     branches: [main]
@@ -36,29 +31,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # A token that can push back to the repository. The default
-          # GITHUB_TOKEN works because permissions.contents is write above.
+          # Needed for the push-back at the end; relies on permissions.contents: write.
           persist-credentials: true
 
       - name: Derive image tag
         id: meta
         run: |
-          # Short commit SHA. Human-readable, unique, and traceable back to the
-          # exact source that produced the image.
           echo "tag=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
 
-      # --- Gate 1: dependency vulnerabilities --------------------------------
-      #
-      # Runs against the source tree, before anything is built. A vulnerable
-      # dependency should fail here rather than after a five-minute build, and
-      # the finding points at go.mod rather than at a layer digest.
+      # Scan the source before building: a bad go.mod fails in 30s, not after a
+      # 5-minute build, and the finding names a file rather than a layer digest.
       - name: Trivy dependency scan
         uses: aquasecurity/trivy-action@0.35.0
         with:
           scan-type: fs
           scan-ref: app
           severity: HIGH,CRITICAL
-          ignore-unfixed: true   # a CVE with no available fix is not actionable here
+          ignore-unfixed: true   # a CVE with no fix is not actionable here
           exit-code: '1'
           format: table
 
@@ -67,10 +56,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          # The narrow role: push to one ECR repository, use one KMS key, and
-          # nothing else. Deliberately not the Terraform role — a job that
-          # builds a container image has no reason to be able to delete a
-          # database.
+          # Not the Terraform role: this scopes to one ECR repo and one KMS key.
           role-to-assume: ${{ vars.AWS_ECR_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
           role-session-name: gha-release-${{ github.run_id }}
@@ -78,9 +64,7 @@ jobs:
       - name: Log in to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # Built locally first so the image can be scanned before it is published.
-      # Pushing and then scanning would mean a vulnerable image is already
-      # available to pull.
+      # Build with push:false so the image is scanned before it is pullable.
       - name: Build image
         uses: docker/build-push-action@v6
         with:
@@ -93,11 +77,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # --- Gate 2: image vulnerabilities -------------------------------------
-      #
-      # The base is distroless static, so this should report almost nothing.
-      # That is the point: a near-empty result here is evidence the base image
-      # choice was correct, and any finding is genuinely ours.
+      # Base is distroless static, so anything reported here comes from our layer.
       - name: Trivy image scan
         uses: aquasecurity/trivy-action@0.35.0
         with:
@@ -108,12 +88,7 @@ jobs:
           exit-code: '1'
           format: table
 
-      # --- SBOM ---------------------------------------------------------------
-      #
-      # An inventory of everything inside the image. The value is not today —
-      # it is the morning a new CVE lands and the question is which images
-      # contain the affected package. Without an SBOM that is an archaeology
-      # exercise across every build.
+      # For CVE triage later: answers which builds contain an affected package.
       - name: Generate SBOM
         uses: anchore/sbom-action@v0
         with:
@@ -128,10 +103,7 @@ jobs:
       - name: Resolve image digest
         id: digest
         run: |
-          # The digest, not the tag, is what gets deployed. ECR tags are
-          # immutable here so the tag is safe too, but a signature covers a
-          # digest, and deploying by digest is what makes verification mean
-          # anything.
+          # Deploy by digest, not tag: a cosign signature covers a digest.
           DIGEST=$(aws ecr describe-images \
             --repository-name "$ECR_REPOSITORY" \
             --image-ids imageTag="${{ steps.meta.outputs.tag }}" \
@@ -139,16 +111,9 @@ jobs:
           echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
           echo "Digest: $DIGEST"
 
-      # --- Signing -----------------------------------------------------------
-      #
-      # Keyless: the signing identity is this workflow's OIDC token, certified
-      # by Fulcio and recorded in the Rekor transparency log. There is no
-      # private key to store, rotate or leak, and the signature records which
-      # workflow in which repository produced the image.
-      #
-      # Verification is not enforced in the cluster yet. A Kyverno
-      # verifyImages policy would reject any image without a signature from
-      # this identity; that is the next step and the reason to sign now.
+      # Keyless: signing identity is this workflow's OIDC token, so there is no
+      # private key to store or rotate. Nothing in the cluster verifies these
+      # signatures yet; a Kyverno verifyImages policy is the intended consumer.
       - uses: sigstore/cosign-installer@v3
 
       - name: Sign the image
@@ -163,7 +128,7 @@ jobs:
             --type spdxjson \
             "${ECR_REGISTRY}/${ECR_REPOSITORY}@${{ steps.digest.outputs.digest }}"
 
-      # --- Handoff to Argo CD -------------------------------------------------
+      # In-place line rewrite, not a yq round-trip: that would strip the file's comments.
       - name: Update the image reference in Git
         run: |
           python3 - "$VALUES_FILE" "${{ steps.meta.outputs.tag }}" "${{ steps.digest.outputs.digest }}" <<'PYEOF'
@@ -188,8 +153,7 @@ jobs:
             echo "Image reference unchanged, nothing to commit."
             exit 0
           fi
-          # [skip ci] is load-bearing: without it this push retriggers the
-          # workflow, which rebuilds, commits again, and loops.
+          # [skip ci] is load-bearing: without it this push retriggers the workflow and loops.
           git commit -m "chore(release): demo-app ${{ steps.meta.outputs.tag }} [skip ci]"
           git push
 

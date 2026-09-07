@@ -1,6 +1,5 @@
-# VPC flow logs record accepted and rejected connections at the network layer.
-# For an SRE this is the first place you look when a pod cannot reach the
-# database and every security group looks correct.
+# Accepts and rejects at the network layer. First place to look when a pod
+# cannot reach the database and every security group looks correct.
 resource "aws_cloudwatch_log_group" "flow_logs" {
   count = var.enable_flow_logs ? 1 : 0
 
