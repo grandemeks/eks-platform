@@ -1,11 +1,11 @@
 # eks-platform
 
-Reference SRE platform on AWS EKS: VPC, EKS, RDS and a demo application, deployed through GitOps, observed end to end, and shipped through a pipeline that builds, scans and signs the image without ever holding cluster credentials.
+SRE platform on **AWS EKS**: **VPC**, **EKS**, **RDS** and a **demo app**, deployed through **GitOps** with end to end observability, and shipped through a pipeline that builds, scans and signs the image without ever holding cluster credentials.
 
-Terraform provisions AWS.\
-Argo CD owns the cluster.\
-CI builds, scans, signs and commits.\
-Argo reconciles from Git.\
+Terraform provisions **AWS**.\
+**Argo CD** owns the cluster.\
+**CI** builds, scans, signs and commits.\
+**Argo** reconciles from Git.
 
 Live at `https://incode-demo.grandemeks.tech` when the environment is up.
 
@@ -68,12 +68,13 @@ flowchart TB
       class argo,w0,w1,w2 k8s
   ```
 
-Waves matter:   External Secrets has to exist before the application, or its `ExternalSecret` has no controller and the pod starts without a database credential. 
-The collector has to exist before the application, or the first spans are emitted into nothing.
+**Waves** matter:\
+**External Secrets** has to exist before the app, or its `ExternalSecret` has no controller and the pod starts without a database credential.\
+The collector has to exist before the app, or the first spans are emitted into nothing.
 
 ### Observability data flow
 
-Three signals, correlated in both directions: a latency spike on a dashboard leads to the trace of one specific slow request, and that trace leads to the log lines the pod wrote while serving it.
+**Three signals**, correlated in both directions: a latency spike on a dashboard leads to the trace of one specific slow request, and that trace leads to the log lines the pod wrote while serving it.
 
 
 ```mermaid
@@ -121,13 +122,13 @@ flowchart LR
 
 | Layer | Tool |
 |---|---|
-| Infrastructure | Terraform with two stacks: `bootstrap` (persistent) and `envs/dev` (ephemeral) |
-| Kubernetes | EKS 1.35, hand-written modules (network, eks, database, irsa-role) |
-| GitOps | Argo CD, App-of-Apps pattern, sync waves |
-| Ingress / DNS | AWS Load Balancer Controller, external-dns, ACM |
-| Secrets | External Secrets Operator, RDS-managed master password, per-namespace IRSA |
-| Observability | Prometheus, Loki, Tempo, OTel Collector and Grafana |
-| CI/CD | GitHub Actions, OIDC federation, Cosign keyless signing |
+| **Infrastructure** | Terraform with two stacks: `bootstrap` (persistent) and `envs/dev` (ephemeral) |
+| **Kubernetes** | EKS 1.35, hand-written modules (network, eks, database, irsa-role) |
+| **GitOps** | Argo CD, App-of-Apps pattern, sync waves |
+| **Ingress** / DNS | AWS Load Balancer Controller, external-dns, ACM |
+| **Secrets** | External Secrets Operator, RDS-managed master password, per-namespace IRSA |
+| **Observability** | Prometheus, Loki, Tempo, OTel Collector and Grafana |
+| **CI/CD** | GitHub Actions, OIDC federation, Cosign keyless signing |
 
 ## Repository layout
 
@@ -187,17 +188,16 @@ The bootstrap layer (state, KMS key, DNS zone, ECR, certificate, CI roles) is le
 
 **Two Terraform stacks:** 
 
-`bootstrap` holds what must survive a teardown: state, the DNS delegation, the ECR repository with its pushed images, the ACM certificate. 
+`bootstrap` holds what must survive a teardown: state, the **DNS delegation**, the **ECR repo** with its pushed images, the **ACM certificate.**\
+`envs/dev` holds what is destroyed between sessions: **VPC**, **EKS**, **RDS** 
 
-`envs/dev` holds what is destroyed between sessions: the VPC, the EKS, the RDS. 
-
-Separate state files mean a `destroy` in one can never reach the other. 
+Separate state files mean a `destroy` in one can never reach the other.\
 They are coupled only by a KMS alias lookup, no remote state reference, no outputs passed by hand.
 
-**Terraform installs Argo CD and nothing else in the cluster.** 
+**Terraform installs Argo CD and nothing else in the cluster.**\
 Argo CD is the one component Terraform creates with `helm_release`, because it is what makes everything after it declarative. 
 
-The load balancer controller, External Secrets, the observability stack and the demo-app are all Argo CD `Application` resources discovered from `argocd/argo-manifests/`. 
+The load balancer controller, External Secrets, the observability stack and the demo-app are all Argo CD `Application` resources discovered from `argocd/argo-manifests/`.\
 Adding a component is a pull request, not a Terraform change, and the release pipeline needs no cluster credentials, because its last action is a commit.
 
 ## Documentation
