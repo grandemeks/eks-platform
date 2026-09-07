@@ -11,62 +11,17 @@ Live at `https://incode-demo.grandemeks.tech` when the environment is up.
 
 ## Architecture
 
-Three diagrams: where things run, how a change gets deployed, and how it is monitored.
+Three diagrams: where things run, how a change gets deployed, and how it is monitored. They are generated from [docs/diagrams/generate.py](docs/diagrams/generate.py), so they get reviewed in a pull request like everything else.
 
 ### Infrastructure and the request path
 
-```mermaid
-flowchart TB
-    user["Internet"] -->|"HTTPS"| r53["Route53<br/>public hosted zone<br/>A/AAAA written by external-dns"]
-    r53 -->|"alias record"| alb
-
-    subgraph VPC["VPC 10.0.0.0/16, 2 AZs"]
-        subgraph PUB["Public Subnets"]
-            alb["ALB<br/>shared via IngressGroup<br/>ACM cert, TLS 1.3"]
-            nat["NAT gateway<br/>shared by both AZs"]
-        end
-        subgraph PRIV["Private Subnets"]
-            nodes["EKS 1.35<br/>2 x t3.large, AL2023<br/>KMS envelope encryption"]
-            rds[("RDS PostgreSQL 18<br/>db.t4g.micro, single AZ<br/>private, force_ssl, KMS")]
-        end
-    end
-
-    alb -->|"target-type: ip<br/>pod IPs in the target group"| nodes
-    nodes -->|"5432, TLS<br/>SG-to-SG rule"| rds
-    nodes -->|"egress only"| nat
-    nat --> aws["ECR, Secrets Manager,<br/>STS, CloudWatch"]
-
-    classDef aws fill:#232f3e,stroke:#ff9900,color:#ffffff
-    class alb,nat,rds,r53,aws aws
-```
+![Infrastructure and the request path](docs/images/infrastructure.png)
 
 ### How a change reaches the cluster
 
-  ```mermaid
-  flowchart TB
-      dev["Developer"] -->|"pull request"| gh["GitHub<br/>main branch"]
+![How a change reaches the cluster](docs/images/delivery.png)
 
-      gh --> prc["pr-checks<br/>fmt, validate, tflint, trivy,<br/>plan, helm lint, gitleaks"]
-      gh --> envwf["environment<br/>terraform apply / destroy<br/>dispatch + required reviewer"]
-      gh --> rel["app-release<br/>trivy, build, trivy, SBOM,<br/>cosign, push, commit digest"]
-
-      rel -->|"OIDC federation"| ecr[("ECR<br/>immutable tags")]
-      rel -->|"commit"| gh
-
-      envwf -->|"terraform apply"| tf["Terraform<br/>bootstrap: state, KMS, DNS, ECR, ACM<br/>envs/dev: VPC, EKS, RDS, IRSA"]
-      tf -->|"helm_release"| argo["Argo CD<br/>app-of-apps root"]
-
-      gh -.->|"polled every 3 min"| argo
-      argo -->|"wave 0"| w0["LB controller, external-dns,<br/>External Secrets"]
-      argo -->|"wave 1"| w1["Prometheus, Loki, Tempo,<br/>OTel Collector"]
-      argo -->|"wave 2"| w2["demo-app"]
-      ecr -.->|"pulled by digest"| w2
-
-      classDef ci fill:#2d2a3e,stroke:#a78bfa,color:#ffffff
-      classDef k8s fill:#1f3a5f,stroke:#7aa6da,color:#ffffff
-      class prc,envwf,rel ci
-      class argo,w0,w1,w2 k8s
-  ```
+The dashed loop is the GitOps cycle: `app-release` commits the new image digest back to Git, and Argo CD reads it from there. The pipeline never touches the cluster.
 
 **Waves** matter:\
 **External Secrets** has to exist before the app, or its `ExternalSecret` has no controller and the pod starts without a database credential.\
@@ -74,48 +29,9 @@ The collector has to exist before the app, or the first spans are emitted into n
 
 ### Observability data flow
 
-**Metrics, logs and traces** are cross-linked both ways. A latency spike on the dashboard gets you the trace of the request that caused it, and from that trace you get the log lines the pod wrote while serving it.
+**Metrics, logs and traces** are cross-linked both ways inside Grafana, which the picture leaves out to keep the pipeline readable. A histogram exemplar carries a `trace_id` and opens that exact trace in Tempo; the trace links to the pod's logs in Loki; a `trace_id` in a log line links back to the trace.
 
-```mermaid
-flowchart LR
-    subgraph APP["demo-app pod"]
-        red["RED metrics<br/>/metrics, OpenMetrics"]
-        spans["OTel spans<br/>OTLP over HTTP"]
-        logs["JSON logs<br/>to stdout"]
-    end
-
-    coll["OTel Collector<br/>DaemonSet, hostPort<br/>filelog + OTLP receivers"]
-
-    logs -->|"read from<br/>/var/log/pods"| coll
-    spans -->|"hostIP:4318/v1/traces"| coll
-
-    prom[("Prometheus<br/>exemplar-storage,<br/>7d retention")]
-    tempo[("Tempo<br/>24h retention")]
-    loki[("Loki<br/>7d retention")]
-
-    red -->|"ServiceMonitor"| prom
-    coll -->|"OTLP gRPC"| tempo
-    coll -->|"OTLP HTTP /otlp"| loki
-    tempo -->|"remote write<br/>span metrics, service graph"| prom
-
-    graf["Grafana"]
-    prom --> graf
-    tempo --> graf
-    loki --> graf
-
-    prom -.->|"exemplar<br/>trace_id"| tempo
-    loki -.->|"derived field<br/>on trace_id"| tempo
-    tempo -.->|"trace to logs"| loki
-    tempo -.->|"trace to metrics"| prom
-
-    am["Alertmanager<br/>routes on severity"]
-    prom -->|"multi-window<br/>burn-rate alerts"| am
-
-    classDef store fill:#232f3e,stroke:#ff9900,color:#ffffff
-    classDef comp fill:#1f3a5f,stroke:#7aa6da,color:#ffffff
-    class prom,tempo,loki store
-    class coll,graf,am comp
-```
+![Observability data flow](docs/images/observability.png)
 
 ## Stack
 
@@ -159,6 +75,8 @@ scripts/
 docs/
   decisions.md      the design decisions, the alternatives, and the trade-offs
   runbook.md        one section per alert, linked from each alert's runbook_url
+  diagrams/         the architecture diagrams as code
+  images/           their rendered output, referenced from this README
 ```
 
 ## Quick start
