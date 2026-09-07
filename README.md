@@ -32,7 +32,7 @@ flowchart TB
     end
 
     alb -->|"target-type ip<br/>registers pod IPs, not node ports"| nodes
-    nodes -->|"TLS on 5432<br/>sec group to sec group"| rds
+    nodes -->|"TLS on 5432<br/>security group to security group"| rds
     nodes -->|"egress only"| nat
     nat --> aws["ECR, Secrets Manager,<br/>STS, CloudWatch"]
 
@@ -46,14 +46,14 @@ flowchart TB
   flowchart TB
       dev["Developer"] -->|"pull request"| gh["GitHub repository<br/>the source of truth"]
 
-      gh --> prc["**pr-checks**<br/>tf fmt, validate, tflint,<br/>trivy, plan, helm lint, gitleaks<br/>no apply path exists"]
-      gh --> envwf["**environment**<br/>terraform apply and destroy<br/>the only workflow that<br/>mutates infrastructure"]
-      gh --> rel["**app-release**<br/>scan, build, scan again,<br/>SBOM, cosign sign, push,<br/>commit the new digest"]
+      gh --> prc["pr-checks<br/>terraform fmt, validate, tflint,<br/>trivy, plan, helm lint, gitleaks<br/>no apply path exists"]
+      gh --> envwf["environment<br/>terraform apply and destroy<br/>the only workflow that<br/>mutates infrastructure"]
+      gh --> rel["app-release<br/>scan, build, scan again,<br/>SBOM, cosign sign, push,<br/>then commit the new digest"]
 
       rel -->|"OIDC, no static keys"| ecr[("ECR<br/>immutable tags")]
       rel -->|"commit"| gh
 
-      envwf -->|"terraform apply"| tf["**Terraform**<br/>**bootstrap:** state, KMS, DNS, ECR, ACM<br/>**envs/dev:** VPC, EKS, RDS, IRSA"]
+      envwf -->|"terraform apply"| tf["Terraform<br/>bootstrap: state, KMS, DNS, ECR, ACM<br/>envs/dev: VPC, EKS, RDS, IRSA"]
       tf -->|"helm_release, the only<br/>thing Terraform puts<br/>in the cluster"| argo["Argo CD<br/>app-of-apps root"]
 
       gh -.->|"polled every 3 min"| argo
