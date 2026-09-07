@@ -17,22 +17,22 @@ Three views of the same system: what runs where, how a change reaches it, and ho
 
 ```mermaid
 flowchart TB
-    user["Internet"] -->|"HTTPS"| r53["Route53 hosted zone<br/>incode-demo.grandemeks.tech<br/>records maintained by external-dns"]
+    user["Internet"] -->|"HTTPS"| r53["Route53 hosted zone<br/>domain<br/>records maintained by external-dns"]
     r53 -->|"alias record"| alb
 
-    subgraph VPC["VPC 10.0.0.0/16, two availability zones"]
-        subgraph PUB["public subnets"]
+    subgraph VPC["VPC 10.0.0.0/16 with two availability zones"]
+        subgraph PUB["Public Subnets"]
             alb["Application Load Balancer<br/>one shared ALB via IngressGroup<br/>ACM certificate, TLS 1.3"]
             nat["NAT gateway<br/>one, shared"]
         end
-        subgraph PRIV["private subnets"]
-            nodes["EKS 1.35 managed node group<br/>2 x t3.large, AL2023<br/>etcd secrets envelope-encrypted with KMS"]
+        subgraph PRIV["Private Subnets"]
+            nodes["EKS 1.35<br/>2 x t3.large, AL2023<br/>etcd secrets encrypted with KMS"]
             rds[("RDS PostgreSQL 18<br/>db.t4g.micro, single AZ<br/>not publicly accessible<br/>force_ssl, KMS at rest")]
         end
     end
 
     alb -->|"target-type ip<br/>registers pod IPs, not node ports"| nodes
-    nodes -->|"TLS on 5432<br/>security group to security group"| rds
+    nodes -->|"TLS on 5432<br/>sec group to sec group"| rds
     nodes -->|"egress only"| nat
     nat --> aws["ECR, Secrets Manager,<br/>STS, CloudWatch"]
 
@@ -46,14 +46,14 @@ flowchart TB
   flowchart TB
       dev["Developer"] -->|"pull request"| gh["GitHub repository<br/>the source of truth"]
 
-      gh --> prc["pr-checks<br/>terraform fmt, validate, tflint,<br/>trivy, plan, helm lint, gitleaks<br/>no apply path exists"]
-      gh --> envwf["environment<br/>terraform apply and destroy<br/>the only workflow that<br/>mutates infrastructure"]
-      gh --> rel["app-release<br/>scan, build, scan again,<br/>SBOM, cosign sign, push,<br/>then commit the new digest"]
+      gh --> prc["**pr-checks**<br/>tf fmt, validate, tflint,<br/>trivy, plan, helm lint, gitleaks<br/>no apply path exists"]
+      gh --> envwf["**environment**<br/>terraform apply and destroy<br/>the only workflow that<br/>mutates infrastructure"]
+      gh --> rel["**app-release**<br/>scan, build, scan again,<br/>SBOM, cosign sign, push,<br/>commit the new digest"]
 
       rel -->|"OIDC, no static keys"| ecr[("ECR<br/>immutable tags")]
       rel -->|"commit"| gh
 
-      envwf -->|"terraform apply"| tf["Terraform<br/>bootstrap: state, KMS, DNS, ECR, ACM<br/>envs/dev: VPC, EKS, RDS, IRSA"]
+      envwf -->|"terraform apply"| tf["**Terraform**<br/>**bootstrap:** state, KMS, DNS, ECR, ACM<br/>**envs/dev:** VPC, EKS, RDS, IRSA"]
       tf -->|"helm_release, the only<br/>thing Terraform puts<br/>in the cluster"| argo["Argo CD<br/>app-of-apps root"]
 
       gh -.->|"polled every 3 min"| argo
