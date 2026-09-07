@@ -3,9 +3,9 @@
 
 image:
   repository: 385291933614.dkr.ecr.eu-central-1.amazonaws.com/eks-platform/demo-app
-  tag: "0d36506"
+  tag: "74bff33"
   # Digest is what deploys; the tag feeds the version label on metrics.
-  digest: "sha256:912636649c2e118193a97310a748ac18b50e71b17c969a61725344c8a1fc64b1"
+  digest: "sha256:a62403898036b9f7654a05d5ac21a6f2c2b5cbdda24c9e547d62eb49e16242ab"
 
 database:
   host: "eks-platform-dev.cty0csq288gi.eu-central-1.rds.amazonaws.com"
