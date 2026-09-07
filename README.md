@@ -3,7 +3,7 @@
 SRE platform on **AWS EKS**: **VPC**, **EKS**, **RDS** and a **demo app**, deployed through **GitOps** with end to end observability, and shipped through a pipeline that builds, scans and signs the image without ever holding cluster credentials.
 
 Terraform provisions **AWS**.\
-**Argo CD** owns the cluster.\
+**ArgoCD** owns the cluster.\
 **CI** builds, scans, signs and commits.\
 **Argo** reconciles from Git.
 
