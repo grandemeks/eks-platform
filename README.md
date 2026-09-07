@@ -3,11 +3,8 @@
 Reference SRE platform on AWS EKS: VPC, EKS, RDS and a demo application, deployed through GitOps, observed end to end, and shipped through a pipeline that builds, scans and signs the image without ever holding cluster credentials.
 
 Terraform provisions AWS. 
-
 Argo CD owns the cluster. 
-
 CI builds, scans, signs and commits.
-
 Argo reconciles from Git.
 
 Live at `https://incode-demo.grandemeks.tech` when the environment is up.
