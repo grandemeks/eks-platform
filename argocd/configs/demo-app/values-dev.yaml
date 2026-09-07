@@ -18,7 +18,7 @@ externalSecret:
   region: eu-central-1
   # Full ARN, not the name. The six-character suffix is not part of the name,
   # so it cannot be derived, and it changes on every rebuild.
-  remoteSecretName: "arn:aws:secretsmanager:eu-central-1:385291933614:secret:rds!db-b185b635-b82e-47c3-b44d-f76b9fdeba6d-eMqJ2a"
+  remoteSecretName: "arn:aws:secretsmanager:eu-central-1:385291933614:secret:rds!db-68180c48-80b0-41fd-ba4a-c21b4597f8c1-COJ1PC"
   roleArn: "arn:aws:iam::385291933614:role/eks-platform-dev-demo-app-secrets"
 
 ingress:
