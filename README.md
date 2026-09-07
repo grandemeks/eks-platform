@@ -11,28 +11,28 @@ Live at `https://incode-demo.grandemeks.tech` when the environment is up.
 
 ## Architecture
 
-Three views of the same system: what runs where, how a change reaches it, and how it is observed.
+Three diagrams: where things run, how a change gets deployed, and how it is monitored.
 
 ### Infrastructure and the request path
 
 ```mermaid
 flowchart TB
-    user["Internet"] -->|"HTTPS"| r53["Route53 hosted zone<br/>domain<br/>records maintained by external-dns"]
+    user["Internet"] -->|"HTTPS"| r53["Route53<br/>public hosted zone<br/>A/AAAA written by external-dns"]
     r53 -->|"alias record"| alb
 
-    subgraph VPC["VPC 10.0.0.0/16 with two availability zones"]
+    subgraph VPC["VPC 10.0.0.0/16, 2 AZs"]
         subgraph PUB["Public Subnets"]
-            alb["Application Load Balancer<br/>one shared ALB via IngressGroup<br/>ACM certificate, TLS 1.3"]
-            nat["NAT gateway<br/>one, shared"]
+            alb["ALB<br/>shared via IngressGroup<br/>ACM cert, TLS 1.3"]
+            nat["NAT gateway<br/>shared by both AZs"]
         end
         subgraph PRIV["Private Subnets"]
-            nodes["EKS 1.35<br/>2 x t3.large, AL2023<br/>etcd secrets encrypted with KMS"]
-            rds[("RDS PostgreSQL 18<br/>db.t4g.micro, single AZ<br/>not publicly accessible<br/>force_ssl, KMS at rest")]
+            nodes["EKS 1.35<br/>2 x t3.large, AL2023<br/>KMS envelope encryption"]
+            rds[("RDS PostgreSQL 18<br/>db.t4g.micro, single AZ<br/>private, force_ssl, KMS")]
         end
     end
 
-    alb -->|"target-type ip<br/>registers pod IPs, not node ports"| nodes
-    nodes -->|"TLS on 5432<br/>security group to security group"| rds
+    alb -->|"target-type: ip<br/>pod IPs in the target group"| nodes
+    nodes -->|"5432, TLS<br/>SG-to-SG rule"| rds
     nodes -->|"egress only"| nat
     nat --> aws["ECR, Secrets Manager,<br/>STS, CloudWatch"]
 
@@ -44,17 +44,17 @@ flowchart TB
 
   ```mermaid
   flowchart TB
-      dev["Developer"] -->|"pull request"| gh["GitHub repository<br/>the source of truth"]
+      dev["Developer"] -->|"pull request"| gh["GitHub<br/>main branch"]
 
-      gh --> prc["pr-checks<br/>terraform fmt, validate, tflint,<br/>trivy, plan, helm lint, gitleaks<br/>no apply path exists"]
-      gh --> envwf["environment<br/>terraform apply and destroy<br/>the only workflow that<br/>mutates infrastructure"]
-      gh --> rel["app-release<br/>scan, build, scan again,<br/>SBOM, cosign sign, push,<br/>then commit the new digest"]
+      gh --> prc["pr-checks<br/>fmt, validate, tflint, trivy,<br/>plan, helm lint, gitleaks"]
+      gh --> envwf["environment<br/>terraform apply / destroy<br/>dispatch + required reviewer"]
+      gh --> rel["app-release<br/>trivy, build, trivy, SBOM,<br/>cosign, push, commit digest"]
 
-      rel -->|"OIDC, no static keys"| ecr[("ECR<br/>immutable tags")]
+      rel -->|"OIDC federation"| ecr[("ECR<br/>immutable tags")]
       rel -->|"commit"| gh
 
       envwf -->|"terraform apply"| tf["Terraform<br/>bootstrap: state, KMS, DNS, ECR, ACM<br/>envs/dev: VPC, EKS, RDS, IRSA"]
-      tf -->|"helm_release, the only<br/>thing Terraform puts<br/>in the cluster"| argo["Argo CD<br/>app-of-apps root"]
+      tf -->|"helm_release"| argo["Argo CD<br/>app-of-apps root"]
 
       gh -.->|"polled every 3 min"| argo
       argo -->|"wave 0"| w0["LB controller, external-dns,<br/>External Secrets"]
@@ -74,8 +74,7 @@ The collector has to exist before the app, or the first spans are emitted into n
 
 ### Observability data flow
 
-**Three signals**, correlated in both directions: a latency spike on a dashboard leads to the trace of one specific slow request, and that trace leads to the log lines the pod wrote while serving it.
-
+**Metrics, logs and traces** are cross-linked both ways. A latency spike on the dashboard gets you the trace of the request that caused it, and from that trace you get the log lines the pod wrote while serving it.
 
 ```mermaid
 flowchart LR
@@ -88,16 +87,16 @@ flowchart LR
     coll["OTel Collector<br/>DaemonSet, hostPort<br/>filelog + OTLP receivers"]
 
     logs -->|"read from<br/>/var/log/pods"| coll
-    spans -->|"node-local hop<br/>hostIP:4318/v1/traces"| coll
+    spans -->|"hostIP:4318/v1/traces"| coll
 
     prom[("Prometheus<br/>exemplar-storage,<br/>7d retention")]
     tempo[("Tempo<br/>24h retention")]
     loki[("Loki<br/>7d retention")]
 
-    red -->|"ServiceMonitor,<br/>scrape"| prom
+    red -->|"ServiceMonitor"| prom
     coll -->|"OTLP gRPC"| tempo
     coll -->|"OTLP HTTP /otlp"| loki
-    tempo -->|"span metrics and<br/>service graph,<br/>remote write"| prom
+    tempo -->|"remote write<br/>span metrics, service graph"| prom
 
     graf["Grafana"]
     prom --> graf
