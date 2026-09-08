@@ -11,7 +11,7 @@ Live at `https://incode-demo.grandemeks.tech` when the environment is up.
 
 ## Architecture
 
-Three diagrams: where things run, how a change gets deployed, and how it is monitored. They are generated from [docs/diagrams/generate.py](docs/diagrams/generate.py), so they get reviewed in a pull request like everything else.
+Three diagrams: where things run, how a change gets deployed, and how it is monitored.
 
 ### Infrastructure and the request path
 
@@ -75,8 +75,7 @@ scripts/
 docs/
   decisions.md      the design decisions, the alternatives, and the trade-offs
   runbook.md        one section per alert, linked from each alert's runbook_url
-  diagrams/         the architecture diagrams as code
-  images/           their rendered output, referenced from this README
+  images/           the architecture diagrams referenced from this README
 ```
 
 ## Quick start
