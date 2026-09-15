@@ -181,6 +181,15 @@ grafana:
       viewers_can_edit: false
     auth.anonymous:
       enabled: false
+    plugins:
+      # Grafana 13 ships prometheus, loki and tempo as bundled plugins, then its
+      # background installer unlinks each one before reinstalling a newer build.
+      # The unlink fails on a read-only root filesystem and the plugin is left
+      # unregistered, so every datasource returns "Plugin not registered" and no
+      # panel renders. Disabling preinstall keeps the bundled plugins as shipped,
+      # which is what an air-gapped install wants anyway.
+      # https://github.com/grafana/grafana/issues/132528
+      preinstall_disabled: true
 
   ingress:
     enabled: true
