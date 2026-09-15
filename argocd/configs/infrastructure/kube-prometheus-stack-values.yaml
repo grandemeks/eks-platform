@@ -57,23 +57,28 @@ alertmanager:
             requests:
               storage: 2Gi
 
+  # snake_case, not camelCase. This block is passed through verbatim as native
+  # Alertmanager config; camelCase is the AlertmanagerConfig CRD's schema, not
+  # this one. With the wrong case the operator fails to parse the secret, never
+  # creates the StatefulSet, and Prometheus reports zero alertmanagers. Helm and
+  # Argo both accept it, so the only sign is the Alertmanager CR staying at 0.
   config:
     route:
       # One notification per incident, not one per pod.
-      groupBy: ["alertname", "service"]
-      groupWait: 30s
-      groupInterval: 5m
-      repeatInterval: 4h
+      group_by: ["alertname", "service"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
       receiver: default
 
       routes:
         # Matched on severity, not alert name, so new alerts inherit the routing.
         - matchers: ["severity = critical"]
           receiver: pager
-          repeatInterval: 1h
+          repeat_interval: 1h
         - matchers: ["severity = warning"]
           receiver: default
-          repeatInterval: 24h
+          repeat_interval: 24h
 
     receivers:
       # Null receivers here; PagerDuty and Slack in production. The routing
@@ -81,10 +86,10 @@ alertmanager:
       - name: default
       - name: pager
 
-    inhibitRules:
+    inhibit_rules:
       # One incident would otherwise page and ticket for the same service.
-      - sourceMatchers: ["severity = critical"]
-        targetMatchers: ["severity = warning"]
+      - source_matchers: ["severity = critical"]
+        target_matchers: ["severity = warning"]
         equal: ["service"]
 
 # --- Grafana ------------------------------------------------------------------
