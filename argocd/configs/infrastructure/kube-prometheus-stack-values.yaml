@@ -150,12 +150,16 @@ grafana:
     storageClassName: gp3
     size: 5Gi
 
+  # Grafana 13 peaks around 340Mi at startup, loading 18 bundled datasource
+  # plugins as separate processes and building the unified-storage search index.
+  # 384Mi left 44Mi of headroom and it was OOMKilled on restart. The chart derives
+  # GOMEMLIMIT from the limit, so raising the limit moves the Go soft limit too.
   resources:
     requests:
       cpu: 50m
-      memory: 192Mi
+      memory: 320Mi
     limits:
-      memory: 384Mi
+      memory: 768Mi
 
   # Lets the app chart ship its dashboard as a labelled ConfigMap.
   sidecar:
