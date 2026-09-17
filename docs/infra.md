@@ -6,10 +6,10 @@ One small Terraform stack that's applied once that holds everything we don't wan
 
 - **Route53 subdomain**, delegated from a zone we own - `incode-demo.grandemeks.tech`
 - **ACM Certificate** for Route53 with validated DNS
-- **ECR Repository** for images for go-appq
+- **ECR Repository** for the Go demo app images
 - **GitHub OIDC** provider for IAM roles that CI assumes
 
-> I separated this the same way I did for my company when I built Azure Landing Zone, basically blast radius is smaller and for any mistakes that can be made. Certificate takes couple of minutes to validate and zone delegation is a manual step at the registrar. 
+> I separated this the same way I did at my company when I built our Azure Landing Zone: it keeps the blast radius of a mistake small. The certificate takes a couple of minutes to validate and the zone delegation is a manual step at the registrar. 
 > 
 > If these were in the same terraform state file as the cluster, every `terraform destroy` would throw them away and every rebuild would wait on DNS propagation.
 
@@ -20,12 +20,12 @@ This is my second Terraform stack, three modules with their own terraform state 
 
 **VPC - Network:** `10.0.0.0/16` across two AZs. 
 Two public `/20`s carrying the ALB, two private `/20`s carrying nodes and RDS. 
-One NAT gateway, not one per AZ: that's my cost trade-off I'll name before you do: 
-it means one AZ's NAT failure takes out all egress, in Production I would set one per AZ.
+One NAT gateway, not one per AZ, which is a deliberate cost trade-off: 
+it means one AZ's NAT failure takes out all egress. In production I would run one per AZ.
 
 **EKS:** Kubernetes Cluster on version 1.35. 
 A managed node group of two `t3.large` on-demand instances in the private subnets. 
-Two things worth meantioning are:
+Two things worth mentioning:
 
 - **Access is managed with EKS access entries**, not the `aws-auth` ConfigMap. 
   Access entries are a real API, auditable, `terraform plan` shows a diff, and you can't lock yourself out by manually editing a ConfigMap.
