@@ -139,6 +139,13 @@ drain_kubernetes() {
   log "Waiting for load balancers to disappear"
   wait_until_empty "load balancers" 30 lbc_load_balancers
 
+  # Operator resources before workloads. The prometheus-operator recreates any
+  # StatefulSet it owns for as long as the custom resource exists, so the pod
+  # comes back, remounts the claim, and pvc-protection never clears. Latent
+  # until Alertmanager first started successfully and had something to resurrect.
+  log "Removing operator-managed resources"
+  kubectl delete prometheus,alertmanager,thanosruler -A --all --wait=false >/dev/null 2>&1 || true
+
   # Workloads before their claims: the pvc-protection finalizer only clears once
   # no pod mounts the volume.
   log "Deleting workloads that hold volumes"
