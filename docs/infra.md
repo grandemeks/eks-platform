@@ -1,14 +1,5 @@
 ## 8 Different layers
 
-> **Layer 1: Terraform Bootstrap** - resources that outlive the environment
-> **Layer 2: Terraform DEV Environment** - VPC, EKS, RDS (Network, Cluster, DB)
-> **Layer 3: Handoff: IRSA and ArgoCD** - Terraform creates four IAM roles for Cluster
-> **Layer 4:** **GitOps: Cluster reconciles itself** - ArgoCD app-of-apps pattern
-> **Layer 5: The request path end-to-end** - HTTP->Route53>ALB>target group>pod
-> **Layer 6: Secrets** - RDS>Secret Manager>ES via IRSA>K8s secret>env var for pod
-> **Layer 7: Observability** - Metrics (Prometheus), Logs (Loki), Traces (Tempo)
-> **Layer 8: CI/CD** - No AWS keys and no cluster credentials in CI
-
 ### Layer 1: Bootstrap: the things that outlive DEV environment
 
 One small Terraform stack that's applied once that holds everything we don't want to destroy when we run `terraform destroy`
