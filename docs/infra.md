@@ -111,3 +111,21 @@ Argo CD notices and deploys.
 CI never holds a kubeconfig, so a compromised runner can't reach the cluster.
 
 ---
+
+## What I'd do next, in order
+
+1. **Alert on the telemetry pipeline itself.** `absent(otelcol_receiver_accepted_spans)` while the app is serving, and `rate(otelcol_exporter_send_failed_spans[5m]) > 0`. Both of today's observability bugs would have paged in minutes instead of hiding.
+2. **A synthetic check that asserts a trace is retrievable.** Generate a request, take the trace ID from the response, fetch it from Tempo. That tests the whole chain rather than each hop, and it's the only test that would have caught the OTLP path bug.
+3. **A Go job in CI.** Build, vet and test on every PR touching `app/**`.
+4. **Split the CI role.** Read-only plan role trusted for `pull_request`, apply role trusted only for `main`.
+5. **Kyverno `verifyImages`**, to turn signing from provenance into a control.
+6. **Then scale:** gateway collector with tail sampling, Thanos or Mimir on S3, S3-backed Loki and Tempo, multi-AZ RDS with failover testing, Karpenter, NetworkPolicies, a real Alertmanager receiver, and Grafana behind SSO.
+
+The pattern worth naming: every bug above was a mechanism with no observable consequence. The defence isn't more care, it's making sure each one has a counter, and alerting on a counter's *absence* rather than its value.
+
+## Bugs I found and fixed
+
+
+**Traces never left the pod.** `OTEL_EXPORTER_OTLP_ENDPOINT` is a *base* URL per the spec, but the SDK's `WithEndpointURL` treats its argument as the *complete* traces URL and, given no path, sets it to `/` on purpose so the default can't apply. The collector only serves `/v1/traces`, so every export got a 404. Nothing looked wrong: app `Healthy`, `"tracing":true` in the log, valid trace IDs handed to callers and attached to exemplars Prometheus stored, all pointing at traces that didn't exist. I found it by looking for a counter that should exist and didn't: `otelcol_receiver_accepted_spans` was missing entirely rather than zero, so it had never been incremented once.
+
+**The 404 was reported correctly and still invisible.** The SDK sends async errors to its global handler, which writes to Go's `log` package, which `slog.SetDefault` routes into the JSON handler at **INFO**. A dead trace pipeline read as one unremarkable info line. Now it goes through `slog` at ERROR.
